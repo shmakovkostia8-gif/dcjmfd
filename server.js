@@ -4,130 +4,244 @@ const { Server } = require('socket.io');
 const path = require('path');
 const compression = require('compression');
 const helmet = require('helmet');
+const { v4: uuidv4 } = require('uuid');
 
 const PORT = process.env.PORT || 7432;
-const NODE_ENV = process.env.NODE_ENV || 'development';
+const NODE_ENV = process.env.NODE_ENV || 'production';
 const app = express();
 const server = http.createServer(app);
 
-// ──── БЕЗОПАСНОСТЬ И ОПТИМИЗАЦИЯ ────
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          БЕЗОПАСНОСТЬ И ОПТИМИЗАЦИЯ                      ║
+// ╚═══════════════════════════════════════════════════════════╝
 app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
-app.use(compression());
-app.use(express.json({ limit: '50mb' }));
+app.use(compression({ level: 6 }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static(path.join(__dirname), {
     etag: false,
-    maxAge: '1d'
+    maxAge: '24h',
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
 }));
 
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          SOCKET.IO НАСТРОЙКИ                             ║
+// ╚═══════════════════════════════════════════════════════════╝
 const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST'],
         credentials: false
     },
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    maxHttpBufferSize: 50 * 1024 * 1024,
-    transports: ['websocket', 'polling']
+    pingTimeout: 120000,
+    pingInterval: 30000,
+    maxHttpBufferSize: 100 * 1024 * 1024,
+    transports: ['websocket', 'polling'],
+    serveClient: false
 });
 
-app.get('/', (_req, res) => {
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          МАРШРУТЫ И УТИЛИТЫ                              ║
+// ╚═══════════════════════════════════════════════════════════╝
+app.get('/', (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime(), rooms: rooms.size });
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        uptime: process.uptime(),
+        rooms: rooms.size,
+        totalConnections: io.engine.clientsCount,
+        timestamp: new Date().toISOString()
+    });
 });
 
-// ──── ХРАНИЛИЩЕ КОМНАТ ────
+app.get('/api/invite/:inviteId', (req, res) => {
+    const invite = invites.get(req.params.inviteId);
+    if (!invite) {
+        return res.status(404).json({ error: 'Invite not found' });
+    }
+    res.json({
+        roomId: invite.roomId,
+        createdBy: invite.createdBy,
+        expiresAt: invite.expiresAt,
+        usageCount: invite.usageCount
+    });
+});
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          ХРАНИЛИЩЕ                                        ║
+// ╚═══════════════════════════════════════════════════════════╝
 const rooms = new Map();
-const MAX_MESSAGES_PER_CHANNEL = 300;
-const MAX_ROOMS_LIFETIME = 60 * 60 * 1000; // 1 час
-const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 минут
-const MAX_MESSAGE_LENGTH = 2000;
-const MAX_ROOM_NAME_LENGTH = 20;
-const MAX_USER_NAME_LENGTH = 32;
+const invites = new Map();
+const userSessions = new Map();
+
+const CONFIG = {
+    MAX_MESSAGES_PER_CHANNEL: 500,
+    MAX_ROOMS_LIFETIME: 90 * 60 * 1000,
+    CLEANUP_INTERVAL: 10 * 60 * 1000,
+    MAX_MESSAGE_LENGTH: 5000,
+    MAX_ROOM_NAME_LENGTH: 30,
+    MAX_USER_NAME_LENGTH: 50,
+    INVITE_EXPIRY: 7 * 24 * 60 * 60 * 1000, // 7 дней
+    MAX_PEERS_PER_ROOM: 100
+};
 
 function getRoom(roomId) {
     if (!rooms.has(roomId)) {
         rooms.set(roomId, {
-            channels: new Map([['general', { messages: [], createdAt: Date.now() }]]),
+            id: roomId,
+            channels: new Map([['general', {
+                id: 'general',
+                messages: [],
+                createdAt: Date.now()
+            }]]),
             users: new Map(),
             created: Date.now(),
-            stats: { totalMessages: 0, peakUsers: 1 }
+            stats: {
+                totalMessages: 0,
+                peakUsers: 0,
+                sessionDurations: []
+            }
         });
     }
     return rooms.get(roomId);
 }
 
-// Автоочистка неиспользуемых комнат
+function createInvite(roomId, createdBy) {
+    const inviteId = uuidv4();
+    invites.set(inviteId, {
+        id: inviteId,
+        roomId,
+        createdBy,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + CONFIG.INVITE_EXPIRY,
+        usageCount: 0
+    });
+    return inviteId;
+}
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          АВТООЧИСТКА                                      ║
+// ╚═══════════════════════════════════════════════════════════╝
 setInterval(() => {
     const now = Date.now();
-    let cleaned = 0;
+    let cleanedRooms = 0;
+    let cleanedInvites = 0;
+
+    // Очистка комнат
     for (const [roomId, room] of rooms.entries()) {
-        if (room.users.size === 0 && now - room.created > MAX_ROOMS_LIFETIME) {
+        if (room.users.size === 0 && now - room.created > CONFIG.MAX_ROOMS_LIFETIME) {
             rooms.delete(roomId);
-            cleaned++;
+            cleanedRooms++;
         }
     }
-    if (cleaned > 0) {
-        console.log(`🧹 Удалено ${cleaned} неиспользуемых комнат`);
-    }
-}, CLEANUP_INTERVAL);
 
-// Логирование активности
+    // Очистка истекших инвайтов
+    for (const [inviteId, invite] of invites.entries()) {
+        if (now > invite.expiresAt) {
+            invites.delete(inviteId);
+            cleanedInvites++;
+        }
+    }
+
+    if (cleanedRooms > 0 || cleanedInvites > 0) {
+        console.log(`🧹 Cleanup: ${cleanedRooms} rooms, ${cleanedInvites} invites`);
+    }
+}, CONFIG.CLEANUP_INTERVAL);
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          СТАТИСТИКА                                       ║
+// ╚═══════════════════════════════════════════════════════════╝
 setInterval(() => {
     let totalUsers = 0;
+    let totalMessages = 0;
+    let maxRoomSize = 0;
+
     for (const room of rooms.values()) {
         totalUsers += room.users.size;
+        totalMessages += room.stats.totalMessages;
+        if (room.users.size > maxRoomSize) maxRoomSize = room.users.size;
     }
+
     if (totalUsers > 0 || rooms.size > 0) {
-        console.log(`📊 А��тивность: ${totalUsers} пользователей в ${rooms.size} комнатах`);
+        console.log(`📊 Status: ${totalUsers} users | ${rooms.size} rooms | ${totalMessages} messages | peak: ${maxRoomSize}`);
     }
 }, 60000);
 
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          SOCKET.IO СОБЫТИЯ                               ║
+// ╚═══════════════════════════════════════════════════════════╝
 io.on('connection', (socket) => {
     let currentRoom = null;
     let currentChannel = 'general';
     let myName = 'Аноним';
     let myColor = '#e8a87c';
     let joinedAt = Date.now();
+    let inviteId = null;
 
-    console.log(`🔌 [${socket.id}] Новое подключение от ${socket.handshake.address}`);
+    console.log(`🔌 [${socket.id}] Connected from ${socket.handshake.address}`);
 
-    // Присоединение к комнате
-    socket.on('join', ({ roomId, name, color }) => {
+    // ─────────────────────────────────────────────────────────
+    // ПРИСОЕДИНЕНИЕ К КОМНАТЕ
+    // ─────────────────────────────────────────────────────────
+    socket.on('join', ({ roomId, name, color, inviteId: invId }) => {
         try {
             if (!roomId || typeof roomId !== 'string') {
-                socket.emit('error:msg', { text: 'Некорректный ID комнаты' });
+                socket.emit('error:join', { text: 'Invalid room ID' });
                 return;
             }
 
-            currentRoom = roomId.toUpperCase().trim().slice(0, MAX_ROOM_NAME_LENGTH);
-            myName = (name || 'Аноним').slice(0, MAX_USER_NAME_LENGTH).trim();
-            myColor = color && /^#[0-9A-Fa-f]{6}$/.test(color) ? color : '#d4820a';
+            // Обработка инвайта
+            if (invId) {
+                const invite = invites.get(invId);
+                if (!invite || Date.now() > invite.expiresAt) {
+                    socket.emit('error:join', { text: 'Invite expired or invalid' });
+                    return;
+                }
+                invite.usageCount++;
+                inviteId = invId;
+            }
+
+            currentRoom = roomId.toUpperCase().trim().slice(0, CONFIG.MAX_ROOM_NAME_LENGTH);
+            myName = (name || 'Аноним').slice(0, CONFIG.MAX_USER_NAME_LENGTH).trim();
+            myColor = /^#[0-9A-Fa-f]{6}$/.test(color) ? color : '#d4820a';
 
             const room = getRoom(currentRoom);
 
-            // Защита от дублей
+            // Проверка лимита
+            if (room.users.size >= CONFIG.MAX_PEERS_PER_ROOM) {
+                socket.emit('error:join', { text: 'Room is full' });
+                return;
+            }
+
+            // Удаление дубликатов
             if (room.users.has(socket.id)) {
                 room.users.delete(socket.id);
             }
 
-            room.users.set(socket.id, {
+            const userData = {
+                id: socket.id,
                 name: myName,
                 color: myColor,
                 channel: currentChannel,
                 joinedAt: Date.now(),
                 audioEnabled: true,
-                videoEnabled: false
-            });
+                videoEnabled: false,
+                screenEnabled: false,
+                speakingLevel: 0
+            };
 
-            // Обновить статистику
+            room.users.set(socket.id, userData);
+            userSessions.set(socket.id, { roomId: currentRoom, userData });
+
             if (room.users.size > room.stats.peakUsers) {
                 room.stats.peakUsers = room.users.size;
             }
@@ -135,58 +249,103 @@ io.on('connection', (socket) => {
             socket.join(currentRoom);
 
             const channelsList = Array.from(room.channels.keys());
-            const channelHistory = (room.channels.get(currentChannel)?.messages || []).slice(-MAX_MESSAGES_PER_CHANNEL);
-            const usersList = Array.from(room.users.entries()).map(([sid, u]) => ({
-                sid,
-                name: u.name,
-                color: u.color,
-                channel: u.channel,
-                audioEnabled: u.audioEnabled,
-                videoEnabled: u.videoEnabled
-            }));
+            const channelHistory = (room.channels.get(currentChannel)?.messages || [])
+                .slice(-CONFIG.MAX_MESSAGES_PER_CHANNEL);
+            const usersList = Array.from(room.users.values());
 
             socket.emit('room:state', {
+                roomId: currentRoom,
                 channels: channelsList,
                 currentChannel,
                 messages: channelHistory,
                 users: usersList,
-                roomStats: room.stats
+                roomStats: room.stats,
+                mySocketId: socket.id
             });
 
-            socket.to(currentRoom).emit('peer:join', {
+            io.to(currentRoom).emit('peer:joined', {
                 sid: socket.id,
                 name: myName,
                 color: myColor,
-                channel: currentChannel,
+                userData,
                 timestamp: Date.now()
             });
 
-            console.log(`📥 [${currentRoom}] ${myName} присоединился (всего: ${room.users.size})`);
+            console.log(`✅ [${currentRoom}] ${myName} joined (total: ${room.users.size})`);
         } catch (e) {
-            console.error('❌ Ошибка при присоединении:', e.message);
-            socket.emit('error:msg', { text: 'Ошибка при присоединении к комнате' });
+            console.error('❌ Join error:', e.message);
+            socket.emit('error:join', { text: 'Connection error' });
         }
     });
 
-    // Создание нового канала
+    // ─────────────────────────────────────────────────────────
+    // СОЗДАНИЕ ИНВАЙТА
+    // ─────────────────────────────────────────────────────────
+    socket.on('invite:create', (callback) => {
+        try {
+            if (!currentRoom || typeof callback !== 'function') return;
+            const newInviteId = createInvite(currentRoom, myName);
+            callback({
+                inviteId: newInviteId,
+                roomId: currentRoom,
+                inviteUrl: `${process.env.INVITE_BASE_URL || 'http://localhost:7432'}?invite=${newInviteId}&room=${currentRoom}`
+            });
+            console.log(`🎟️ [${currentRoom}] Invite created by ${myName}`);
+        } catch (e) {
+            console.error('❌ Invite creation error:', e.message);
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // АУДИО ДИАГНОСТИКА
+    // ─────────────────────────────────────────────────────────
+    socket.on('audio:check', (callback) => {
+        try {
+            if (typeof callback === 'function') {
+                callback({
+                    status: 'ok',
+                    timestamp: Date.now(),
+                    socketId: socket.id,
+                    serverTime: new Date().toISOString(),
+                    message: 'Audio channel verified - server hearing you clearly'
+                });
+            }
+        } catch (e) {
+            console.error('❌ Audio check error:', e.message);
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // КАНАЛЫ
+    // ─────────────────────────────────────────────────────────
     socket.on('channel:create', ({ channelName }) => {
         try {
             if (!currentRoom) return;
             const room = rooms.get(currentRoom);
             if (!room) return;
 
-            const normalizedName = channelName.trim().toLowerCase().slice(0, MAX_ROOM_NAME_LENGTH);
-            if (!room.channels.has(normalizedName) && /^[\wа-яА-ЯёЁ0-9_-]{2,20}$/.test(normalizedName)) {
-                room.channels.set(normalizedName, { messages: [], createdAt: Date.now() });
-                io.to(currentRoom).emit('channel:added', normalizedName);
-                console.log(`📢 [${currentRoom}] Создан канал #${normalizedName}`);
+            const normalized = channelName.trim().toLowerCase()
+                .slice(0, CONFIG.MAX_ROOM_NAME_LENGTH)
+                .replace(/[^a-z0-9_-]/g, '');
+
+            if (!room.channels.has(normalized) && /^[a-z0-9_-]{2,}$/.test(normalized)) {
+                room.channels.set(normalized, {
+                    id: normalized,
+                    messages: [],
+                    createdAt: Date.now()
+                });
+                io.to(currentRoom).emit('channel:added', {
+                    channelName: normalized,
+                    createdBy: myName,
+                    timestamp: Date.now()
+                });
+                console.log(`📢 [${currentRoom}] Channel #${normalized} created`);
             }
         } catch (e) {
-            console.error('❌ Ошибка при создании канала:', e.message);
+            console.error('❌ Channel creation error:', e.message);
         }
     });
 
-    // Переключение канала
     socket.on('channel:switch', ({ channelName }) => {
         try {
             if (!currentRoom) return;
@@ -197,16 +356,23 @@ io.on('connection', (socket) => {
             if (user) user.channel = channelName;
             currentChannel = channelName;
 
-            const messages = room.channels.get(channelName).messages.slice(-MAX_MESSAGES_PER_CHANNEL);
+            const messages = room.channels.get(channelName).messages
+                .slice(-CONFIG.MAX_MESSAGES_PER_CHANNEL);
             socket.emit('channel:switched', { channelName, messages });
-            socket.to(currentRoom).emit('peer:channel', { sid: socket.id, channel: channelName });
+            io.to(currentRoom).emit('peer:channelChanged', {
+                sid: socket.id,
+                channel: channelName,
+                timestamp: Date.now()
+            });
             console.log(`🔄 [${currentRoom}] ${myName} → #${channelName}`);
         } catch (e) {
-            console.error('❌ Ошибка при переключении канала:', e.message);
+            console.error('❌ Channel switch error:', e.message);
         }
     });
 
-    // Отправка сообщения с модерацией
+    // ─────────────────────────────────────────────────────────
+    // ЧАТИНГ С ПОЛНОЙ МОДЕРАЦИЕЙ
+    // ─────────────────────────────────────────────────────────
     socket.on('chat:send', ({ text }) => {
         try {
             if (!currentRoom || !text?.trim()) return;
@@ -216,20 +382,22 @@ io.on('connection', (socket) => {
             const channel = room.channels.get(currentChannel);
             if (!channel) return;
 
-            const sanitizedText = text
-                .slice(0, MAX_MESSAGE_LENGTH)
+            const sanitized = text
+                .slice(0, CONFIG.MAX_MESSAGE_LENGTH)
                 .trim()
                 .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
 
-            if (!sanitizedText) return;
+            if (!sanitized) return;
 
             const msg = {
                 id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
                 sid: socket.id,
                 author: myName,
                 color: myColor,
-                text: sanitizedText,
+                text: sanitized,
                 ts: Date.now(),
                 channel: currentChannel
             };
@@ -237,24 +405,23 @@ io.on('connection', (socket) => {
             channel.messages.push(msg);
             room.stats.totalMessages++;
 
-            if (channel.messages.length > MAX_MESSAGES_PER_CHANNEL) {
+            if (channel.messages.length > CONFIG.MAX_MESSAGES_PER_CHANNEL) {
                 channel.messages.shift();
             }
 
-            io.to(currentRoom).emit('chat:msg', msg);
-            console.log(`💬 [${currentRoom}/#${currentChannel}] ${myName}: ${sanitizedText.substring(0, 40)}`);
+            io.to(currentRoom).emit('chat:message', msg);
+            console.log(`💬 [${currentRoom}/#${currentChannel}] ${myName}: ${sanitized.substring(0, 50)}`);
         } catch (e) {
-            console.error('❌ Ошибка при отправке сообщения:', e.message);
+            console.error('❌ Message send error:', e.message);
         }
     });
 
-    // Реакция на сообщение
     socket.on('chat:react', ({ msgId, emoji }) => {
         try {
             if (!currentRoom || !msgId || !emoji) return;
-            if (!(/^[\p{Emoji}]/u.test(emoji)) && emoji.length > 2) return;
+            if (emoji.length > 5) return;
 
-            io.to(currentRoom).emit('chat:react', {
+            io.to(currentRoom).emit('chat:reaction', {
                 msgId,
                 emoji: emoji.slice(0, 2),
                 from: myName,
@@ -263,23 +430,26 @@ io.on('connection', (socket) => {
                 timestamp: Date.now()
             });
         } catch (e) {
-            console.error('❌ Ошибка при реакции:', e.message);
+            console.error('❌ Reaction error:', e.message);
         }
     });
 
-    // WebRTC сигналинг
+    // ──────────────────────────────────────────────────────���──
+    // WEBRTC СИГНАЛИНГ (УЛУЧШЕННЫЙ)
+    // ─────────────────────────────────────────────────────────
     socket.on('rtc:offer', ({ to, offer }) => {
         try {
             if (!to || !offer) return;
             io.to(to).emit('rtc:offer', {
                 from: socket.id,
-                name: myName,
-                color: myColor,
+                fromName: myName,
+                fromColor: myColor,
                 offer,
                 timestamp: Date.now()
             });
+            console.log(`📞 RTC offer: ${socket.id} → ${to}`);
         } catch (e) {
-            console.error('❌ Ошибка при RTC offer:', e.message);
+            console.error('❌ RTC offer error:', e.message);
         }
     });
 
@@ -291,8 +461,9 @@ io.on('connection', (socket) => {
                 answer,
                 timestamp: Date.now()
             });
+            console.log(`✅ RTC answer: ${socket.id} → ${to}`);
         } catch (e) {
-            console.error('❌ Ошибка при RTC answer:', e.message);
+            console.error('❌ RTC answer error:', e.message);
         }
     });
 
@@ -305,122 +476,141 @@ io.on('connection', (socket) => {
                 timestamp: Date.now()
             });
         } catch (e) {
-            console.error('❌ Ошибка при RTC ice:', e.message);
+            console.error('❌ ICE candidate error:', e.message);
         }
     });
 
-    // Состояние медиа
+    socket.on('rtc:error', ({ to, error }) => {
+        try {
+            io.to(to).emit('rtc:error', {
+                from: socket.id,
+                error,
+                timestamp: Date.now()
+            });
+            console.log(`⚠️ RTC error from ${socket.id}: ${error}`);
+        } catch (e) {
+            console.error('❌ RTC error handling:', e.message);
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // СОСТОЯНИЕ МЕДИА
+    // ─────────────────────────────────────────────────────────
     socket.on('media:state', (state) => {
         try {
             if (currentRoom && typeof state === 'object') {
                 const user = rooms.get(currentRoom)?.users.get(socket.id);
                 if (user) {
-                    if (typeof state.mic === 'boolean') user.audioEnabled = state.mic;
-                    if (typeof state.cam === 'boolean') user.videoEnabled = state.cam;
+                    if (typeof state.audio === 'boolean') user.audioEnabled = state.audio;
+                    if (typeof state.video === 'boolean') user.videoEnabled = state.video;
+                    if (typeof state.screen === 'boolean') user.screenEnabled = state.screen;
+                    if (typeof state.speakingLevel === 'number') user.speakingLevel = state.speakingLevel;
                 }
-                socket.to(currentRoom).emit('media:state', {
+                io.to(currentRoom).emit('media:changed', {
                     sid: socket.id,
                     ...state,
                     timestamp: Date.now()
                 });
             }
         } catch (e) {
-            console.error('❌ Ошибка при media:state:', e.message);
+            console.error('❌ Media state error:', e.message);
         }
     });
 
-    // Печатает
+    // ─────────────────────────────────────────────────────────
+    // ИНДИКАТОР ПЕЧАТИ
+    // ─────────────────────────────────────────────────────────
     socket.on('typing', (isTyping) => {
         try {
             if (currentRoom) {
-                socket.to(currentRoom).emit('typing', {
+                io.to(currentRoom).emit('user:typing', {
                     sid: socket.id,
                     name: myName,
-                    on: !!isTyping,
+                    isTyping: !!isTyping,
                     channel: currentChannel,
                     timestamp: Date.now()
                 });
             }
         } catch (e) {
-            console.error('❌ Ошибка при typing:', e.message);
+            console.error('❌ Typing error:', e.message);
         }
     });
 
-    // Диагностика аудио
-    socket.on('audio:test', (callback) => {
-        try {
-            if (typeof callback === 'function') {
-                callback({
-                    status: 'ok',
-                    timestamp: Date.now(),
-                    serverId: socket.id
-                });
-            }
-        } catch (e) {
-            console.error('❌ Ошибка при audio:test:', e.message);
-        }
-    });
-
-    // Ping
+    // ─────────────────────────────────────────────────────────
+    // ПИНГ (ЗАМЕР ЗАДЕРЖКИ)
+    // ─────────────────────────────────────────────────────────
     socket.on('ping', (callback) => {
         try {
             if (typeof callback === 'function') {
-                callback({ pong: Date.now(), latency: 0 });
+                callback({ pong: Date.now() });
             }
         } catch (e) {
-            console.error('❌ Ошибка при ping:', e.message);
+            console.error('❌ Ping error:', e.message);
         }
     });
 
-    // Отключение
-    socket.on('disconnect', () => {
+    // ─────────────────────────────────────────────────────────
+    // ОТКЛЮЧЕНИЕ
+    // ─────────────────────────────────────────────────────────
+    socket.on('disconnect', (reason) => {
         try {
             if (currentRoom) {
                 const room = rooms.get(currentRoom);
                 if (room) {
                     const sessionDuration = Date.now() - joinedAt;
+                    room.stats.sessionDurations.push(sessionDuration);
                     room.users.delete(socket.id);
-                    io.to(currentRoom).emit('peer:leave', {
+
+                    io.to(currentRoom).emit('peer:left', {
                         sid: socket.id,
                         name: myName,
+                        reason,
                         timestamp: Date.now()
                     });
-                    console.log(`🚪 [${currentRoom}] ${myName} покинул сессию (${Math.round(sessionDuration / 1000)}s, осталось: ${room.users.size})`);
 
-                    if (room.users.size === 0) {
-                        console.log(`⏳ [${currentRoom}] Комната опустела`);
-                    }
+                    console.log(`🚪 [${currentRoom}] ${myName} disconnected (${Math.round(sessionDuration / 1000)}s, reason: ${reason})`);
                 }
             }
+            userSessions.delete(socket.id);
         } catch (e) {
-            console.error('❌ Ошибка при disconnect:', e.message);
+            console.error('❌ Disconnect error:', e.message);
         }
     });
 
-    // Обработка ошибок
     socket.on('error', (err) => {
-        console.error(`❌ Socket error [${socket.id}]:`, err);
+        console.error(`⚠️ Socket error [${socket.id}]:`, err);
     });
 });
 
-// Обработка ошибок сервера
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          ГЛОБАЛЬНАЯ ОБРАБОТКА ОШИБОК                      ║
+// ╚═══════════════════════════════════════════════════════════╝
 process.on('uncaughtException', (err) => {
     console.error('❌ Uncaught Exception:', err);
+    process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('❌ Unhandled Rejection:', reason);
 });
 
+// ╔═══════════════════════════════════════════════════════════╗
+// ║          ЗАПУСК СЕРВЕРА                                   ║
+// ╚═══════════════════════════════════════════════════════════╝
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-╔════════════════════════════════════════════════╗
-║   ⚡ NEXUS v2.0 — Advanced Voice Chat        ║
-║   🚀 Сервер запущен успешно!                  ║
-║   Порт: ${PORT}                              
-║   Окружение: ${NODE_ENV}                              
-║   Адрес: http://localhost:${PORT}        
-║   WebSocket: готов к работе ✓                 ║
-╚════════════════════════════════════════════════╝
-`);
+    const banner = `
+╔════════════════════════════════════════════════════════╗
+║   ⚡ NEXUS v3.0 - Advanced Voice Chat                 ║
+║   🚀 Server Online & Ready                            ║
+╟────────────────────────────────────────────────────────╢
+║   Port: ${PORT}${' '.repeat(45 - PORT.toString().length)}║
+║   Mode: ${NODE_ENV}${' '.repeat(49 - NODE_ENV.length)}║
+║   URL: http://localhost:${PORT}${' '.repeat(33 - PORT.toString().length)}║
+║   WebSocket: ✅ Ready                                 ║
+║   Audio: 🎙️ Optimized P2P                            ║
+╚════════════════════════════════════════════════════════╝
+    `;
+    console.log(banner);
 });
+
+module.exports = { app, server, io };
