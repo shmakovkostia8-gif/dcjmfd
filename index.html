@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ══════════════ NEXUS v4.1 — Full Stable ══════════════ */
+/* ══════════════ NEXUS v4.2 — POLITE PEER FIX ══════════════ */
 :root {
   --bg0:   #0d0f12;
   --bg1:   #13161b;
@@ -544,16 +544,8 @@ const ICE_SERVERS = [
   {urls:'stun:stun1.l.google.com:19302'},
   {urls:'stun:stun2.l.google.com:19302'},
   {urls:'stun:global.stun.twilio.com:3478'},
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  }
+  {urls:'turn:openrelay.metered.ca:80', username:'openrelayproject', credential:'openrelayproject'},
+  {urls:'turn:openrelay.metered.ca:443', username:'openrelayproject', credential:'openrelayproject'}
 ];
 
 // ══ STATE ══
@@ -570,18 +562,10 @@ let callStart, timerInt;
 let audioCtx, analyserNode, speakingInt;
 let videoZoneCollapsed = false;
 let typingTimeout;
-
-let audioSettings = {
-  noiseSuppression: true,
-  echoCancellation: true,
-  autoGainControl: true,
-  stereo: false
-};
+let pendingAudioCtxResume = false;
 
 const $lobby  = document.getElementById('lobby');
 const $app    = document.getElementById('app');
-
-// ══ Сервер автоматически ══
 const SERVER_URL = window.location.origin;
 
 // ── Session storage ──
@@ -688,33 +672,29 @@ function renderText(t){
 // ══════════════════════════════════════
 async function getAudioStream(){
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    return stream;
+    return await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch(e){ return null; }
 }
 
 async function getCameraStream(){
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera, width:{ideal:1280}, height:{ideal:720} } });
-    return stream;
+    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera, width:{ideal:1280}, height:{ideal:720} } });
   } catch(e){ return null; }
 }
 
-// Основная функция смены видео для всех peer connections
 function replaceVideoTrackForAll(newTrack) {
   for (const sid in peers) {
     const pc = peers[sid].pc;
     if (!pc) continue;
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (sender) {
-      sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack error:', e));
+      sender.replaceTrack(newTrack).catch(()=>{});
     } else if (newTrack) {
       pc.addTrack(newTrack, new MediaStream([newTrack]));
     }
   }
 }
 
-// Включение/выключение микрофона
 function toggleMic() {
   micOn = !micOn;
   if (audioTrack) audioTrack.enabled = micOn;
@@ -726,7 +706,6 @@ function toggleMic() {
   renderParticipants();
 }
 
-// Переключение камеры
 async function toggleCam() {
   if (camOn) {
     if (cameraVideoTrack) {
@@ -753,7 +732,6 @@ async function toggleCam() {
   socket?.emit('media:state', { mic: micOn, cam: camOn });
 }
 
-// Демонстрация экрана
 async function toggleScreen() {
   if (screenOn) {
     if (screenVideoTrack) {
@@ -778,7 +756,7 @@ async function toggleScreen() {
 }
 
 // ══════════════════════════════════════
-// WebRTC
+// WebRTC with POLITE PEER logic
 // ══════════════════════════════════════
 function createPC(peerId, peerName, peerColor) {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -791,9 +769,7 @@ function createPC(peerId, peerName, peerColor) {
     if (e.candidate) socket.emit('rtc:ice', { to: peerId, candidate: e.candidate });
   };
 
-  pc.oniceconnectionstatechange = () => {
-    console.log(`ICE ${peerId}: ${pc.iceConnectionState}`);
-  };
+  pc.oniceconnectionstatechange = () => console.log(`ICE ${peerId}: ${pc.iceConnectionState}`);
 
   pc.ontrack = e => {
     console.log(`📡 ontrack от ${peerId}: ${e.track.kind}`);
@@ -816,17 +792,20 @@ function createPC(peerId, peerName, peerColor) {
   return pc;
 }
 
-async function callPeer(sid, name, color) {
+// Инициировать звонок тому, чей ID больше моего
+async function callPeerIfGreater(sid, name, color) {
   if (peers[sid]) return;
-  console.log(`📞 Звонок ${name}`);
-  const pc = createPC(sid, name, color);
-  peers[sid] = { pc, name, color: color||'#888', micEnabled: true, videoEnabled: false, stream: null };
-  addPeerTile(sid, name, color||'#888');
-  try {
-    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
-    await pc.setLocalDescription(offer);
-    socket.emit('rtc:offer', { to: sid, offer });
-  } catch(e) {}
+  if (socket.id < sid) {
+    console.log(`Я (${socket.id}) инициирую звонок с ${sid} (${name})`);
+    const pc = createPC(sid, name, color);
+    peers[sid] = { pc, name, color: color||'#888', micEnabled: true, videoEnabled: false, stream: null };
+    addPeerTile(sid, name, color||'#888');
+    try {
+      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+      socket.emit('rtc:offer', { to: sid, offer });
+    } catch(e) {}
+  }
 }
 
 function removePeer(sid) {
@@ -896,8 +875,15 @@ function setTileMic(sid, on){
 }
 
 // ══════════════════════════════════════
-// SPEAKING DETECTION
+// AUDIO CONTEXT (отложенный запуск)
 // ══════════════════════════════════════
+function resumeAudioCtx() {
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(()=>{});
+  }
+  pendingAudioCtxResume = false;
+}
+
 function startSpeakingDetection(){
   if(!audioTrack) return;
   try {
@@ -921,11 +907,24 @@ function startSpeakingDetection(){
         if(bars) bars.style.display = 'none';
       }
     }, 100);
-  } catch(e){}
+  } catch(e) {
+    pendingAudioCtxResume = true; // попробуем при первом клике
+  }
 }
 
+// ── Обработчик клика для разблокировки аудио ──
+document.addEventListener('click', () => {
+  if (pendingAudioCtxResume) {
+    startSpeakingDetection();
+    pendingAudioCtxResume = false;
+  } else {
+    resumeAudioCtx();
+  }
+  document.querySelectorAll('video').forEach(v => v.play().catch(()=>{}));
+}, { once: false }); // не once, чтобы срабатывать после каждого клика, если нужно
+
 // ══════════════════════════════════════
-// SOCKET EVENTS
+// SOCKET EVENTS (с polite peer)
 // ══════════════════════════════════════
 function setupSocket(){
   socket.on('room:state', ({channels: chans, currentChannel: cur, messages: msgs, users}) => {
@@ -934,8 +933,9 @@ function setupSocket(){
     renderChannels();
     messages[currentChannel] = msgs || [];
     (msgs||[]).forEach(addMsgDOM);
+    // Polite: инициируем звонки только тем, у кого socket.id > моего
     users.forEach(u => {
-      if(u.sid !== socket.id) callPeer(u.sid, u.name, u.color);
+      if (u.sid !== socket.id) callPeerIfGreater(u.sid, u.name, u.color);
     });
     renderParticipants();
     updateMeFooter();
@@ -955,13 +955,16 @@ function setupSocket(){
   });
 
   socket.on('peer:join', ({sid, name, color}) => {
-    callPeer(sid, name, color);
+    // Polite: инициируем звонок, если мой id > нового участника
+    callPeerIfGreater(sid, name, color);
     renderParticipants();
     sysMsg(`${name} присоединился`);
   });
 
   socket.on('rtc:offer', async ({from, name, color, offer}) => {
+    // Принимаем звонок от того, чей id меньше
     if(peers[from] && peers[from].pc?.signalingState !== 'closed') return;
+    console.log(`Принимаю offer от ${from}`);
     const pc = createPC(from, name, color);
     peers[from] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
     addPeerTile(from, name, color||'#888');
@@ -1044,7 +1047,7 @@ function setupSocket(){
 }
 
 // ══════════════════════════════════════
-// UI RENDER
+// UI RENDER (без изменений)
 // ══════════════════════════════════════
 function renderChannels(){
   const cont = document.getElementById('channelList');
@@ -1230,7 +1233,7 @@ window.join = async function(mode){
 
   setupSocket();
 
-  // Захват микрофона (включён по умолчанию)
+  // Захват микрофона (включён)
   const audioStream = await getAudioStream();
   if(audioStream) {
     audioTrack = audioStream.getAudioTracks()[0];
@@ -1248,12 +1251,10 @@ window.join = async function(mode){
   $app.style.display = 'flex';
   document.getElementById('topRoom').textContent = roomId;
 
-  // Кнопка микрофона
   const micBtn = document.getElementById('micBtn');
   micBtn.className = `call-btn ${micOn ? 'on' : 'off'}`;
   micBtn.innerHTML = `${micOn ? '🎤' : '🔇'} <span class="label">${micOn ? 'Микрофон' : 'Откл. мик.'}</span>`;
 
-  // Таймер звонка
   callStart = Date.now();
   timerInt = setInterval(() => {
     const elapsed = Date.now() - callStart;
@@ -1373,11 +1374,6 @@ document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('click', e => { if(e.target === bg) bg.classList.remove('open'); });
 });
 
-// Разблокировка автозапуска видео
-document.addEventListener('click', () => {
-  document.querySelectorAll('video').forEach(v => v.play().catch(()=>{}));
-}, { once: true });
-
 // Auto-restore session
 window.addEventListener('DOMContentLoaded', () => {
   const saved = loadState();
@@ -1396,6 +1392,9 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 })();
+</script>
+</body>
+</html>
 </script>
 </body>
 </html>
