@@ -1,13 +1,24 @@
 {
   "name": "dcjmfd",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "NEXUS - Advanced Voice, Video & Screen Share Platform",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   },
   "dependencies": {
     "express": "^4.21.0",
     "socket.io": "^4.7.5",
-    "cors": "^2.8.5"
-  }
+    "cors": "^2.8.5",
+    "compression": "^1.7.4",
+    "helmet": "^7.1.0"
+  },
+  "devDependencies": {},
+  "author": "NEXUS Team",
+  "license": "MIT"
 }
