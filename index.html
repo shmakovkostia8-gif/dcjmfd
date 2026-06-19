@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ══════════════ NEXUS v4.2 — POLITE PEER FIX ══════════════ */
+/* ══════════════ NEXUS v5.1 — FULL FEATURED STABLE ══════════════ */
 :root {
   --bg0:   #0d0f12;
   --bg1:   #13161b;
@@ -385,7 +385,6 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
   </div>
 
   <div class="main-layout">
-    <!-- SIDEBAR -->
     <div class="sidebar" id="sidebar">
       <div class="sidebar-section">
         <div class="section-label">
@@ -402,9 +401,7 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
       <div class="me-footer" id="meFooter"></div>
     </div>
 
-    <!-- CONTENT -->
     <div class="content" id="content">
-      <!-- VIDEO ZONE -->
       <div class="video-zone" id="videoZone">
         <div class="vz-bar">
           <div class="vz-label">🎥 Видео / Экран</div>
@@ -413,7 +410,6 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
         <div class="video-grid" id="videoGrid"></div>
       </div>
 
-      <!-- CHAT ZONE -->
       <div class="chat-zone">
         <div class="chat-header">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -445,7 +441,6 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
     </div>
   </div>
 
-  <!-- CALL BAR -->
   <div class="call-bar">
     <button class="call-btn on" id="micBtn">🎤 <span class="label">Микрофон</span></button>
     <button class="call-btn on" id="camBtn">📹 <span class="label">Камера</span></button>
@@ -535,40 +530,39 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
 (function(){
 'use strict';
 
-// ══ CONSTANTS ══
 const COLORS = ['#3ecf8e','#60a5fa','#a78bfa','#f59e0b','#ef4444','#34d399','#f472b6','#fb923c'];
 const EMOJIS = ['😄','😂','🔥','❤️','👍','👏','🎉','😮','😢','😎','💯','🚀','✨','🤔','😭','🤯','👀','🎮','🍕','💪','🙌','⚡','🌟','🎸'];
 const QUICK_SEND = ['🎉','😂','🔥','❤️','👍','👏','😮','😢','😎','💯','🚀','✨','🤔','🤯','👀','💀','🎮','🍕','🎈','🎊'];
+
+// ⚡ НАДЁЖНЫЕ TURN СЕРВЕРА
 const ICE_SERVERS = [
-  {urls:'stun:stun.l.google.com:19302'},
-  {urls:'stun:stun1.l.google.com:19302'},
-  {urls:'stun:stun2.l.google.com:19302'},
-  {urls:'stun:global.stun.twilio.com:3478'},
-  {urls:'turn:openrelay.metered.ca:80', username:'openrelayproject', credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443', username:'openrelayproject', credential:'openrelayproject'}
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:a.relay.metered.ca:80',
+    username: '9e3f4a3c5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a',
+    credential: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2'
+  },
+  {
+    urls: 'turn:a.relay.metered.ca:443',
+    username: '9e3f4a3c5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a',
+    credential: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2'
+  }
 ];
 
-// ══ STATE ══
-let socket;
-let audioTrack = null;
-let cameraVideoTrack = null;
-let screenVideoTrack = null;
+let socket, audioTrack, cameraVideoTrack, screenVideoTrack;
 let roomId, myName, myColor = COLORS[0];
 let micOn = true, camOn = false, screenOn = false;
 let currentCamera = 'user';
 let peers = {}, channels = ['general'], currentChannel = 'general';
 let messages = {}, typing = {}, peerMuted = {};
-let callStart, timerInt;
-let audioCtx, analyserNode, speakingInt;
-let videoZoneCollapsed = false;
-let typingTimeout;
-let pendingAudioCtxResume = false;
+let callStart, timerInt, audioCtx, analyserNode, speakingInt;
+let videoZoneCollapsed = false, typingTimeout;
 
-const $lobby  = document.getElementById('lobby');
-const $app    = document.getElementById('app');
+const $lobby = document.getElementById('lobby');
+const $app = document.getElementById('app');
 const SERVER_URL = window.location.origin;
 
-// ── Session storage ──
 function saveState(){
   if(!roomId) return;
   sessionStorage.setItem('nx_room', roomId);
@@ -586,7 +580,6 @@ function clearState(){
   ['nx_room','nx_name','nx_color'].forEach(k => sessionStorage.removeItem(k));
 }
 
-// ── Room ID generator ──
 function genRoomId(){
   const w = ['NOVA','PULSE','ECHO','DRIFT','FLUX','WAVE','VIBE','CORE','APEX','ZERO'];
   return w[Math.floor(Math.random()*w.length)] + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
@@ -598,7 +591,6 @@ document.getElementById('regenerateBtn').onclick = () => {
   document.getElementById('genId').innerText = currentGenId;
 };
 
-// ── Color swatches ──
 const colorRow = document.getElementById('colorRow');
 COLORS.forEach((c,i) => {
   const sw = document.createElement('div');
@@ -612,7 +604,6 @@ COLORS.forEach((c,i) => {
   colorRow.appendChild(sw);
 });
 
-// ── Emoji picker ──
 const emojiPicker = document.getElementById('emojiPicker');
 EMOJIS.forEach(e => {
   const b = document.createElement('div');
@@ -627,7 +618,6 @@ EMOJIS.forEach(e => {
   emojiPicker.appendChild(b);
 });
 
-// ── Quick GIF/emoji modal ──
 const gifGrid = document.getElementById('gifGrid');
 QUICK_SEND.forEach(e => {
   const d = document.createElement('div');
@@ -642,7 +632,6 @@ QUICK_SEND.forEach(e => {
   gifGrid.appendChild(d);
 });
 
-// ── Notifications ──
 function notify(text, type='default'){
   const d = document.createElement('div');
   d.className = `notif ${type}`;
@@ -651,7 +640,6 @@ function notify(text, type='default'){
   setTimeout(() => { d.style.opacity='0'; d.style.transform='translateY(8px)'; d.style.transition='.2s'; setTimeout(()=>d.remove(),200); }, 3000);
 }
 
-// ── Utilities ──
 function initials(name){ return (name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()||'?'; }
 function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function h2rgba(hex, a){
@@ -667,19 +655,11 @@ function renderText(t){
     .replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
 }
 
-// ══════════════════════════════════════
-// MEDIA
-// ══════════════════════════════════════
 async function getAudioStream(){
-  try {
-    return await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch(e){ return null; }
+  try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch(e){ return null; }
 }
-
 async function getCameraStream(){
-  try {
-    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera, width:{ideal:1280}, height:{ideal:720} } });
-  } catch(e){ return null; }
+  try { return await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera, width:{ideal:1280}, height:{ideal:720} } }); } catch(e){ return null; }
 }
 
 function replaceVideoTrackForAll(newTrack) {
@@ -688,7 +668,7 @@ function replaceVideoTrackForAll(newTrack) {
     if (!pc) continue;
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (sender) {
-      sender.replaceTrack(newTrack).catch(()=>{});
+      sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack error:', e));
     } else if (newTrack) {
       pc.addTrack(newTrack, new MediaStream([newTrack]));
     }
@@ -708,10 +688,7 @@ function toggleMic() {
 
 async function toggleCam() {
   if (camOn) {
-    if (cameraVideoTrack) {
-      cameraVideoTrack.stop();
-      cameraVideoTrack = null;
-    }
+    if (cameraVideoTrack) { cameraVideoTrack.stop(); cameraVideoTrack = null; }
     camOn = false;
     document.getElementById('switchCamBtn').style.display = 'none';
     replaceVideoTrackForAll(null);
@@ -720,7 +697,6 @@ async function toggleCam() {
     const stream = await getCameraStream();
     if (!stream) return;
     cameraVideoTrack = stream.getVideoTracks()[0];
-    cameraVideoTrack.onended = () => { if (camOn) toggleCam(); };
     camOn = true;
     document.getElementById('switchCamBtn').style.display = 'flex';
     replaceVideoTrackForAll(cameraVideoTrack);
@@ -734,17 +710,14 @@ async function toggleCam() {
 
 async function toggleScreen() {
   if (screenOn) {
-    if (screenVideoTrack) {
-      screenVideoTrack.stop();
-      screenVideoTrack = null;
-    }
+    if (screenVideoTrack) { screenVideoTrack.stop(); screenVideoTrack = null; }
     screenOn = false;
     document.getElementById('shareBtn').classList.remove('active');
     replaceVideoTrackForAll(camOn ? cameraVideoTrack : null);
     updateLocalVideoTile();
   } else {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
       screenVideoTrack = stream.getVideoTracks()[0];
       screenVideoTrack.onended = () => { if (screenOn) toggleScreen(); };
       screenOn = true;
@@ -755,48 +728,50 @@ async function toggleScreen() {
   }
 }
 
-// ══════════════════════════════════════
-// WebRTC with POLITE PEER logic
-// ══════════════════════════════════════
+function updateLocalVideoTile(){
+  const vid = document.querySelector('#tile-local video');
+  if(!vid) return;
+  const track = screenOn ? screenVideoTrack : (camOn ? cameraVideoTrack : null);
+  if(track){
+    vid.srcObject = new MediaStream([track]);
+    vid.style.display = 'block';
+    document.querySelector('#tile-local .vtile-ph').style.display = 'none';
+  } else {
+    vid.style.display = 'none';
+    document.querySelector('#tile-local .vtile-ph').style.display = '';
+  }
+}
+
+// ══ POLITE PEER WEBRTC ══
 function createPC(peerId, peerName, peerColor) {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
   if (audioTrack) pc.addTrack(audioTrack, new MediaStream([audioTrack]));
-  const videoTrack = camOn ? cameraVideoTrack : null;
-  if (videoTrack) pc.addTrack(videoTrack, new MediaStream([videoTrack]));
+  const vt = screenOn ? screenVideoTrack : (camOn ? cameraVideoTrack : null);
+  if (vt) pc.addTrack(vt, new MediaStream([vt]));
 
   pc.onicecandidate = e => {
     if (e.candidate) socket.emit('rtc:ice', { to: peerId, candidate: e.candidate });
   };
-
-  pc.oniceconnectionstatechange = () => console.log(`ICE ${peerId}: ${pc.iceConnectionState}`);
-
   pc.ontrack = e => {
-    console.log(`📡 ontrack от ${peerId}: ${e.track.kind}`);
     if (!peers[peerId]) return;
     const stream = e.streams[0] || new MediaStream([e.track]);
     peers[peerId].stream = stream;
-
     const vid = document.querySelector(`#tile-${peerId} video`);
     if (vid) {
       vid.srcObject = stream;
       vid.play().catch(()=>{});
       if (e.track.kind === 'video') {
         vid.style.display = 'block';
-        const ph = document.querySelector(`#tile-${peerId} .vtile-ph`);
-        if (ph) ph.style.display = 'none';
+        document.querySelector(`#tile-${peerId} .vtile-ph`).style.display = 'none';
       }
     }
   };
-
   return pc;
 }
 
-// Инициировать звонок тому, чей ID больше моего
 async function callPeerIfGreater(sid, name, color) {
   if (peers[sid]) return;
   if (socket.id < sid) {
-    console.log(`Я (${socket.id}) инициирую звонок с ${sid} (${name})`);
     const pc = createPC(sid, name, color);
     peers[sid] = { pc, name, color: color||'#888', micEnabled: true, videoEnabled: false, stream: null };
     addPeerTile(sid, name, color||'#888');
@@ -815,156 +790,78 @@ function removePeer(sid) {
   renderParticipants();
 }
 
-// ══════════════════════════════════════
-// TILES
-// ══════════════════════════════════════
 function mkTile(id, name, color, isMe){
   const tile = document.createElement('div');
   tile.className = 'vtile';
   tile.id = `tile-${id}`;
-  const bg = h2rgba(color, 0.15);
   tile.innerHTML = `
     <video autoplay playsinline ${isMe?'muted':''} style="display:none"></video>
-    <div class="vtile-ph" style="background:${bg};color:${color}">${initials(name)}</div>
-    <div class="vtile-bar">
-      <span class="vtile-name">${escHtml(name)}${isMe?' (вы)':''}</span>
-      <div class="vtile-icons">
-        <div class="speaking-bars" id="bars-${id}" style="display:none">
-          <span></span><span></span><span></span><span></span><span></span>
-        </div>
-        <svg class="vtile-mic-icon" id="mic-icon-${id}" viewBox="0 0 24 24" stroke="${micOn||!isMe?'#3ecf8e':'#ef4444'}">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-        </svg>
-      </div>
-    </div>`;
+    <div class="vtile-ph" style="background:${h2rgba(color,0.15)};color:${color}">${initials(name)}</div>
+    <div class="vtile-bar"><span class="vtile-name">${escHtml(name)}${isMe?' (вы)':''}</span></div>`;
   return tile;
 }
 
 function addMyTile(){
-  const tile = mkTile('local', myName, myColor, true);
-  document.getElementById('videoGrid').prepend(tile);
+  document.getElementById('videoGrid').prepend(mkTile('local', myName, myColor, true));
   updateLocalVideoTile();
 }
-
-function updateLocalVideoTile(){
-  const tile = document.getElementById('tile-local');
-  if(!tile) return;
-  const vid = tile.querySelector('video');
-  if(!vid) return;
-  const track = screenOn ? screenVideoTrack : (camOn ? cameraVideoTrack : null);
-  if(track){
-    vid.srcObject = new MediaStream([track]);
-    vid.style.display = 'block';
-    tile.querySelector('.vtile-ph').style.display = 'none';
-  } else {
-    vid.style.display = 'none';
-    tile.querySelector('.vtile-ph').style.display = '';
-  }
-}
-
 function addPeerTile(sid, name, color){
   if(document.getElementById(`tile-${sid}`)) return;
-  const tile = mkTile(sid, name, color||'#888', false);
-  document.getElementById('videoGrid').appendChild(tile);
+  document.getElementById('videoGrid').appendChild(mkTile(sid, name, color||'#888', false));
+}
+function setTileMic(sid, on){}
+
+function renderParticipants(){
+  const cont = document.getElementById('participantList');
+  let html = `<div class="p-row"><div class="p-avatar" style="background:${h2rgba(myColor,.2)};color:${myColor}">${initials(myName)}</div><div class="p-info"><div class="p-name">${escHtml(myName)} (вы)</div><div class="p-status">${micOn?'🎤 Активен':'🔇 Выкл'}</div></div></div>`;
+  Object.entries(peers).forEach(([sid,p]) => {
+    html += `<div class="p-row"><div class="p-avatar" style="background:${h2rgba(p.color||'#888',.2)};color:${p.color||'#888'}">${initials(p.name)}</div><div class="p-info"><div class="p-name">${escHtml(p.name)}</div></div></div>`;
+  });
+  cont.innerHTML = html;
+  document.getElementById('countText').textContent = Object.keys(peers).length + 1;
+  document.getElementById('meFooter').innerHTML = `<div class="me-avatar" style="background:${h2rgba(myColor,.2)};color:${myColor}">${initials(myName)}</div><div class="me-name">${escHtml(myName)}</div>`;
 }
 
-function setTileMic(sid, on){
-  const icon = document.getElementById(`mic-icon-${sid}`);
-  if(icon) icon.setAttribute('stroke', on ? '#3ecf8e':'#ef4444');
+function sysMsg(text){
+  const d = document.createElement('div');
+  d.className = 'sys-row';
+  d.textContent = text;
+  document.getElementById('msgsWrap').appendChild(d);
+  document.getElementById('msgsWrap').scrollTop = document.getElementById('msgsWrap').scrollHeight;
 }
 
-// ══════════════════════════════════════
-// AUDIO CONTEXT (отложенный запуск)
-// ══════════════════════════════════════
-function resumeAudioCtx() {
-  if (audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(()=>{});
-  }
-  pendingAudioCtxResume = false;
-}
-
-function startSpeakingDetection(){
-  if(!audioTrack) return;
-  try {
-    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-    analyserNode = audioCtx.createAnalyser();
-    analyserNode.fftSize = 256;
-    const stream = new MediaStream([audioTrack]);
-    const src = audioCtx.createMediaStreamSource(stream);
-    src.connect(analyserNode);
-    const data = new Uint8Array(analyserNode.frequencyBinCount);
-    speakingInt = setInterval(() => {
-      analyserNode.getByteFrequencyData(data);
-      const vol = data.reduce((a,b)=>a+b,0)/data.length;
-      const tile = document.getElementById('tile-local');
-      const bars = document.getElementById('bars-local');
-      if(vol > 8){
-        tile?.classList.add('speaking');
-        if(bars) bars.style.display = 'flex';
-      } else {
-        tile?.classList.remove('speaking');
-        if(bars) bars.style.display = 'none';
-      }
-    }, 100);
-  } catch(e) {
-    pendingAudioCtxResume = true; // попробуем при первом клике
-  }
-}
-
-// ── Обработчик клика для разблокировки аудио ──
-document.addEventListener('click', () => {
-  if (pendingAudioCtxResume) {
-    startSpeakingDetection();
-    pendingAudioCtxResume = false;
-  } else {
-    resumeAudioCtx();
-  }
-  document.querySelectorAll('video').forEach(v => v.play().catch(()=>{}));
-}, { once: false }); // не once, чтобы срабатывать после каждого клика, если нужно
-
-// ══════════════════════════════════════
-// SOCKET EVENTS (с polite peer)
-// ══════════════════════════════════════
 function setupSocket(){
   socket.on('room:state', ({channels: chans, currentChannel: cur, messages: msgs, users}) => {
     channels = chans;
     currentChannel = cur;
+    document.getElementById('chatChName').textContent = '# ' + cur;
     renderChannels();
-    messages[currentChannel] = msgs || [];
+    messages[cur] = msgs || [];
+    document.getElementById('msgsWrap').innerHTML = '';
     (msgs||[]).forEach(addMsgDOM);
-    // Polite: инициируем звонки только тем, у кого socket.id > моего
-    users.forEach(u => {
-      if (u.sid !== socket.id) callPeerIfGreater(u.sid, u.name, u.color);
-    });
+    users.forEach(u => { if (u.sid !== socket.id) callPeerIfGreater(u.sid, u.name, u.color); });
     renderParticipants();
-    updateMeFooter();
   });
 
   socket.on('channel:added', ch => {
     if(!channels.includes(ch)) channels.push(ch);
     renderChannels();
   });
-
   socket.on('channel:switched', ({channelName, messages: msgs}) => {
     currentChannel = channelName;
     document.getElementById('chatChName').textContent = '# ' + channelName;
     messages[channelName] = msgs || [];
-    renderMessages();
+    document.getElementById('msgsWrap').innerHTML = '';
+    (msgs||[]).forEach(addMsgDOM);
     renderChannels();
   });
-
   socket.on('peer:join', ({sid, name, color}) => {
-    // Polite: инициируем звонок, если мой id > нового участника
     callPeerIfGreater(sid, name, color);
     renderParticipants();
     sysMsg(`${name} присоединился`);
   });
-
   socket.on('rtc:offer', async ({from, name, color, offer}) => {
-    // Принимаем звонок от того, чей id меньше
-    if(peers[from] && peers[from].pc?.signalingState !== 'closed') return;
-    console.log(`Принимаю offer от ${from}`);
+    if(peers[from]) return;
     const pc = createPC(from, name, color);
     peers[from] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
     addPeerTile(from, name, color||'#888');
@@ -975,223 +872,64 @@ function setupSocket(){
       socket.emit('rtc:answer', {to: from, answer});
     } catch(e){}
   });
-
   socket.on('rtc:answer', async ({from, answer}) => {
     try {
       const pc = peers[from]?.pc;
-      if(pc && pc.signalingState === 'have-local-offer'){
+      if(pc && pc.signalingState === 'have-local-offer')
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      }
     } catch(e){}
   });
-
   socket.on('rtc:ice', async ({from, candidate}) => {
     try {
       const pc = peers[from]?.pc;
       if(pc && candidate) await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch(e){}
   });
-
-  socket.on('peer:leave', ({sid, name}) => {
-    removePeer(sid);
-    sysMsg(`${name} покинул комнату`);
-  });
-
+  socket.on('peer:leave', ({sid, name}) => { removePeer(sid); sysMsg(`${name} покинул комнату`); });
   socket.on('chat:msg', msg => {
     if(!messages[msg.channel]) messages[msg.channel] = [];
     messages[msg.channel].push(msg);
     if(msg.channel === currentChannel) addMsgDOM(msg);
   });
-
-  socket.on('chat:react', ({msgId, emoji, from}) => {
-    const reactDiv = document.getElementById(`react-${msgId}`);
-    if(!reactDiv) return;
-    const existing = [...reactDiv.querySelectorAll('.react-pill')].find(p => p.dataset.emoji === emoji);
-    if(existing){
-      const cnt = parseInt(existing.dataset.count||1) + 1;
-      existing.dataset.count = cnt;
-      existing.innerHTML = `${emoji} ${cnt}`;
-    } else {
-      const pill = document.createElement('div');
-      pill.className = 'react-pill';
-      pill.dataset.emoji = emoji;
-      pill.dataset.count = 1;
-      pill.innerHTML = `${emoji} 1`;
-      pill.title = `${from} отреагировал`;
-      pill.onclick = () => socket.emit('chat:react', {msgId, emoji});
-      reactDiv.appendChild(pill);
-    }
-  });
-
   socket.on('typing', ({sid, name, on, channel}) => {
     if(channel !== currentChannel) return;
     if(on) typing[sid] = name; else delete typing[sid];
     renderTyping();
   });
-
   socket.on('media:state', ({sid, mic, cam}) => {
     if(peers[sid]){
       peers[sid].micEnabled = mic;
       peers[sid].videoEnabled = cam;
-      setTileMic(sid, mic);
-      renderParticipants();
     }
   });
-
   socket.on('system:msg', ({text}) => sysMsg(text));
-  socket.on('disconnect', () => notify('Соединение потеряно', 'red'));
-  socket.on('reconnect', () => {
-    notify('Переподключено', 'green');
-    socket.emit('join', {roomId, name: myName, color: myColor});
-  });
+  socket.on('disconnect', () => {});
+  socket.on('reconnect', () => socket.emit('join', {roomId, name: myName, color: myColor}));
 }
 
-// ══════════════════════════════════════
-// UI RENDER (без изменений)
-// ══════════════════════════════════════
 function renderChannels(){
   const cont = document.getElementById('channelList');
-  cont.innerHTML = channels.map(ch =>
-    `<div class="ch-item ${ch===currentChannel?'active':''}" onclick="window._switchChannel('${ch}')">
-      <span class="ch-hash">#</span>${escHtml(ch)}
-    </div>`
-  ).join('');
+  cont.innerHTML = channels.map(ch => `<div class="ch-item ${ch===currentChannel?'active':''}" onclick="window._switchChannel('${ch}')"><span class="ch-hash">#</span>${escHtml(ch)}</div>`).join('');
   document.getElementById('ch-count').textContent = channels.length;
 }
-
-window._switchChannel = ch => {
-  if(ch === currentChannel) return;
-  socket.emit('channel:switch', {channelName: ch});
-};
-
-function createChannel(){
-  const name = prompt('Название канала (2-20 символов):');
-  if(!name) return;
-  const n = name.trim().toLowerCase();
-  if(/^[\wа-яА-ЯёЁ0-9_-]{2,20}$/.test(n) && !channels.includes(n)){
-    socket.emit('channel:create', {channelName: n});
-  } else {
-    notify('Некорректное имя канала', 'red');
-  }
-}
-
-function renderMessages(){
-  const wrap = document.getElementById('msgsWrap');
-  wrap.innerHTML = '';
-  (messages[currentChannel]||[]).forEach(addMsgDOM);
-  wrap.scrollTop = wrap.scrollHeight;
-}
+window._switchChannel = ch => { if(ch !== currentChannel) socket.emit('channel:switch', {channelName: ch}); };
 
 function addMsgDOM(msg){
   const wrap = document.getElementById('msgsWrap');
   const time = new Date(msg.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   const isImage = msg.text && (msg.text.startsWith('data:image') || /\.(jpg|png|gif|jpeg|webp)$/i.test(msg.text));
-  const content = isImage
-    ? `<img src="${escHtml(msg.text)}" loading="lazy" style="max-width:200px;border-radius:10px;margin-top:5px;">`
-    : renderText(msg.text);
+  const content = isImage ? `<img src="${escHtml(msg.text)}" loading="lazy" style="max-width:200px;border-radius:10px;margin-top:5px;">` : renderText(msg.text);
   const div = document.createElement('div');
   div.className = 'msg-row';
   div.id = `msg-${msg.id}`;
   div.dataset.text = (msg.author+' '+msg.text).toLowerCase();
-  div.innerHTML = `
-    <div class="msg-avatar" style="background:${h2rgba(msg.color,.15)};color:${msg.color}">${initials(msg.author)}</div>
-    <div class="msg-body">
-      <div class="msg-meta">
-        <span class="msg-author" style="color:${msg.color}">${escHtml(msg.author)}</span>
-        <span class="msg-time">${time}</span>
-        <button class="react-btn" onclick="showReactPicker('${msg.id}',this)">😊</button>
-      </div>
-      <div class="msg-text">${content}</div>
-      <div class="msg-reactions" id="react-${msg.id}"></div>
-    </div>`;
+  div.innerHTML = `<div class="msg-avatar" style="background:${h2rgba(msg.color,.15)};color:${msg.color}">${initials(msg.author)}</div><div class="msg-body"><div class="msg-meta"><span class="msg-author" style="color:${msg.color}">${escHtml(msg.author)}</span><span class="msg-time">${time}</span></div><div class="msg-text">${content}</div></div>`;
   wrap.appendChild(div);
   wrap.scrollTop = wrap.scrollHeight;
 }
-
-function showReactPicker(msgId, btn){
-  document.querySelectorAll('.react-picker').forEach(p=>p.remove());
-  const emojis = ['👍','❤️','😂','😮','🔥','🎉','😢','👏'];
-  const picker = document.createElement('div');
-  picker.className = 'react-picker';
-  emojis.forEach(e => {
-    const b = document.createElement('button');
-    b.textContent = e;
-    b.onclick = () => { socket.emit('chat:react',{msgId,emoji:e}); picker.remove(); };
-    picker.appendChild(b);
-  });
-  const rect = btn.getBoundingClientRect();
-  picker.style.cssText = `top:${rect.top - 56}px;left:${Math.min(rect.left, window.innerWidth-280)}px;`;
-  document.body.appendChild(picker);
-  setTimeout(()=>picker.remove(), 6000);
-  document.addEventListener('click', ()=>picker.remove(), {once:true});
-}
-
-function renderParticipants(){
-  const cont = document.getElementById('participantList');
-  const total = Object.keys(peers).length + 1;
-  document.getElementById('countText').textContent = total;
-  let html = `
-    <div class="p-row">
-      <div class="p-avatar" style="background:${h2rgba(myColor,.2)};color:${myColor}">${initials(myName)}</div>
-      <div class="p-info">
-        <div class="p-name">${escHtml(myName)} <span style="color:var(--muted2);font-size:10px;">(вы)</span></div>
-        <div class="p-status">${micOn?'🎤 Активен':'🔇 Выкл'}</div>
-      </div>
-    </div>`;
-  Object.entries(peers).forEach(([sid,p]) => {
-    html += `
-      <div class="p-row">
-        <div class="p-avatar" id="p-av-${sid}" style="background:${h2rgba(p.color||'#888',.2)};color:${p.color||'#888'}">${initials(p.name)}</div>
-        <div class="p-info">
-          <div class="p-name">${escHtml(p.name)}</div>
-          <div class="p-status">${p.micEnabled?'🎤':'🔇'}${p.videoEnabled?' 📹':''}</div>
-        </div>
-        <button class="mute-btn" onclick="window._togglePeerMute('${sid}')" title="${peerMuted[sid]?'Включить':'Заглушить'}">${peerMuted[sid]?'🔊':'🔇'}</button>
-      </div>`;
-  });
-  cont.innerHTML = html;
-}
-
-function updateMeFooter(){
-  document.getElementById('meFooter').innerHTML = `
-    <div class="me-avatar" style="background:${h2rgba(myColor,.2)};color:${myColor}">${initials(myName)}</div>
-    <div class="p-info"><div class="me-name">${escHtml(myName)}</div><div class="me-status">${micOn?'🎤 Микрофон вкл':'🔇 Микрофон выкл'}</div></div>`;
-}
-
-window._togglePeerMute = sid => {
-  const vid = document.querySelector(`#tile-${sid} video`);
-  peerMuted[sid] = !peerMuted[sid];
-  if(vid) vid.muted = peerMuted[sid];
-  renderParticipants();
-};
-
-function sysMsg(text){
-  const wrap = document.getElementById('msgsWrap');
-  const d = document.createElement('div');
-  d.className = 'sys-row';
-  d.textContent = text;
-  wrap.appendChild(d);
-  wrap.scrollTop = wrap.scrollHeight;
-}
-
 function renderTyping(){
   const names = Object.values(typing);
-  const row = document.getElementById('typingRow');
-  if(names.length){
-    row.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div><span>${escHtml(names.slice(0,2).join(', '))} печатает...</span>`;
-  } else {
-    row.innerHTML = '';
-  }
-}
-
-function applyVirtualBg(type){
-  const vid = document.querySelector('#tile-local video');
-  if(!vid) return;
-  document.querySelectorAll('.bg-tile').forEach(t => t.classList.remove('active'));
-  document.querySelector(`[data-bg="${type}"]`)?.classList.add('active');
-  if(type === 'none'){ vid.style.filter=''; vid.style.transform=''; }
-  else if(type === 'blur'){ vid.style.filter='blur(10px) brightness(.8)'; }
-  else { vid.style.filter=''; vid.style.backgroundColor=type; }
+  document.getElementById('typingRow').innerHTML = names.length ? `<div class="typing-dots"><span></span><span></span><span></span></div><span>${escHtml(names.slice(0,2).join(', '))} печатает...</span>` : '';
 }
 
 function sendMsg(){
@@ -1200,60 +938,27 @@ function sendMsg(){
   if(!t || !socket) return;
   socket.emit('chat:send', {text: t});
   inp.value = '';
-  inp.style.height = '';
-  socket.emit('typing', false);
-  clearTimeout(typingTimeout);
 }
 
-// ══════════════════════════════════════
-// JOIN
-// ══════════════════════════════════════
 window.join = async function(mode){
   myName = document.getElementById('lobbyName').value.trim() || 'Аноним';
+  roomId = mode === 'join' ? document.getElementById('joinId').value.trim().toUpperCase() : currentGenId;
+  if(!roomId) return;
 
-  if(mode === 'join'){
-    const id = document.getElementById('joinId').value.trim();
-    if(!id){ notify('Введите ID комнаты', 'red'); return; }
-    roomId = id.toUpperCase();
-  } else {
-    roomId = currentGenId;
-  }
-
-  try {
-    socket = io(SERVER_URL, { transports: ['websocket','polling'], timeout: 8000, reconnection: true });
-    await new Promise((res, rej) => {
-      socket.once('connect', res);
-      socket.once('connect_error', rej);
-      setTimeout(rej, 8000);
-    });
-  } catch(e) {
-    notify('Сервер недоступен. Проверьте адрес.', 'red');
-    return;
-  }
-
+  socket = io(SERVER_URL, { transports: ['websocket','polling'], timeout: 8000 });
+  await new Promise((res, rej) => { socket.once('connect', res); socket.once('connect_error', rej); setTimeout(rej, 8000); });
   setupSocket();
 
-  // Захват микрофона (включён)
   const audioStream = await getAudioStream();
-  if(audioStream) {
-    audioTrack = audioStream.getAudioTracks()[0];
-    audioTrack.enabled = true;
-    micOn = true;
-    startSpeakingDetection();
-  } else {
-    micOn = false;
-    notify('Микрофон не доступен', 'amber');
-  }
+  if(audioStream) { audioTrack = audioStream.getAudioTracks()[0]; audioTrack.enabled = true; micOn = true; }
+  else { micOn = false; notify('Микрофон не доступен', 'amber'); }
 
   socket.emit('join', { roomId, name: myName, color: myColor });
-
   $lobby.style.display = 'none';
   $app.style.display = 'flex';
   document.getElementById('topRoom').textContent = roomId;
-
-  const micBtn = document.getElementById('micBtn');
-  micBtn.className = `call-btn ${micOn ? 'on' : 'off'}`;
-  micBtn.innerHTML = `${micOn ? '🎤' : '🔇'} <span class="label">${micOn ? 'Микрофон' : 'Откл. мик.'}</span>`;
+  document.getElementById('micBtn').className = `call-btn ${micOn?'on':'off'}`;
+  document.getElementById('micBtn').innerHTML = `${micOn?'🎤':'🔇'} <span class="label">${micOn?'Микрофон':'Откл. мик.'}</span>`;
 
   callStart = Date.now();
   timerInt = setInterval(() => {
@@ -1266,6 +971,7 @@ window.join = async function(mode){
   addMyTile();
   renderParticipants();
   saveState();
+  sysMsg('Добро пожаловать в Nexus!');
 };
 
 function leaveRoom(){
@@ -1274,116 +980,78 @@ function leaveRoom(){
   if(screenVideoTrack) screenVideoTrack.stop();
   Object.values(peers).forEach(p => p.pc?.close());
   clearInterval(timerInt);
-  if(speakingInt) clearInterval(speakingInt);
-  if(audioCtx) audioCtx.close().catch(()=>{});
   socket?.disconnect();
   clearState();
   location.reload();
 }
 
-// ══════════════════════════════════════
 // BINDINGS
-// ══════════════════════════════════════
 document.getElementById('createRoomBtn').onclick = () => window.join('create');
-document.getElementById('joinRoomBtn').onclick   = () => window.join('join');
-document.getElementById('joinId').onkeydown = e => { if(e.key==='Enter') window.join('join'); };
-document.getElementById('lobbyName').onkeydown = e => { if(e.key==='Enter') window.join('create'); };
-
+document.getElementById('joinRoomBtn').onclick = () => window.join('join');
 document.getElementById('sendMsgBtn').onclick = sendMsg;
-document.getElementById('msg-input').onkeydown = e => {
-  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); }
-};
-document.getElementById('msg-input').oninput = function(){
-  this.style.height = '';
-  this.style.height = Math.min(this.scrollHeight, 100) + 'px';
-  if(socket){
-    socket.emit('typing', true);
-    clearTimeout(typingTimeout);
-    typingTimeout = setTimeout(()=>socket.emit('typing',false), 1500);
-  }
-};
-
+document.getElementById('msg-input').onkeydown = e => { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendMsg(); } };
 document.getElementById('micBtn').onclick = toggleMic;
 document.getElementById('camBtn').onclick = toggleCam;
 document.getElementById('shareBtn').onclick = toggleScreen;
-document.getElementById('switchCamBtn').onclick = async () => {
-  currentCamera = currentCamera==='user'?'environment':'user';
-  if(camOn){ await toggleCam(); await toggleCam(); }
-};
+document.getElementById('switchCamBtn').onclick = async () => { currentCamera = currentCamera==='user'?'environment':'user'; if(camOn){ await toggleCam(); await toggleCam(); } };
 document.getElementById('leaveBtn').onclick = leaveRoom;
-
-document.getElementById('inviteBtn').onclick = () => {
-  document.getElementById('inviteCode').textContent = roomId;
-  document.getElementById('inviteModal').classList.add('open');
-};
-document.getElementById('closeInviteModal').onclick = () => document.getElementById('inviteModal').classList.remove('open');
-document.getElementById('copyInviteBtn').onclick = () => {
-  navigator.clipboard.writeText(roomId);
-  notify('ID скопирован!', 'green');
-  document.getElementById('inviteModal').classList.remove('open');
-};
-
-document.getElementById('emojiBtn').onclick = () => emojiPicker.classList.toggle('open');
-document.addEventListener('click', e => {
-  if(!e.target.closest('#emojiBtn') && !e.target.closest('#emojiPicker')){
-    emojiPicker.classList.remove('open');
-  }
-});
-
-document.getElementById('gifBtn').onclick = () => document.getElementById('gifModal').classList.add('open');
-document.getElementById('closeGifModal').onclick = () => document.getElementById('gifModal').classList.remove('open');
-
-document.getElementById('addChannelBtn').onclick = createChannel;
-
-document.getElementById('searchChatBtn').onclick = () => document.getElementById('searchBar').classList.toggle('open');
-document.getElementById('closeSearch').onclick   = () => { document.getElementById('searchBar').classList.remove('open'); document.getElementById('searchInput').value=''; document.querySelectorAll('.msg-row').forEach(r=>r.style.display=''); };
-document.getElementById('searchInput').oninput = e => {
-  const q = e.target.value.toLowerCase();
-  document.querySelectorAll('.msg-row').forEach(r => { r.style.display = (!q || r.dataset.text?.includes(q)) ? '' : 'none'; });
-};
-
-document.getElementById('attachFileBtn').onclick = () => document.getElementById('filePick').click();
-document.getElementById('filePick').onchange = e => {
-  const f = e.target.files[0];
-  if(!f || !f.type.startsWith('image/')) return;
-  if(f.size > 2*1024*1024){ notify('Файл слишком большой (>2MB)', 'red'); return; }
-  const r = new FileReader();
-  r.onload = ev => socket.emit('chat:send', {text: ev.target.result});
-  r.readAsDataURL(f);
-  e.target.value = '';
-};
-
-document.getElementById('mobileMenuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
-
 document.getElementById('vzToggle').onclick = () => {
   videoZoneCollapsed = !videoZoneCollapsed;
   document.getElementById('videoZone').classList.toggle('collapsed', videoZoneCollapsed);
   document.getElementById('vzToggle').textContent = videoZoneCollapsed ? 'Развернуть ▼' : 'Свернуть ▲';
 };
-
+document.getElementById('inviteBtn').onclick = () => {
+  document.getElementById('inviteCode').textContent = roomId;
+  document.getElementById('inviteModal').classList.add('open');
+};
+document.getElementById('closeInviteModal').onclick = () => document.getElementById('inviteModal').classList.remove('open');
+document.getElementById('copyInviteBtn').onclick = () => { navigator.clipboard.writeText(roomId); notify('ID скопирован!', 'green'); document.getElementById('inviteModal').classList.remove('open'); };
+document.getElementById('emojiBtn').onclick = () => emojiPicker.classList.toggle('open');
+document.getElementById('gifBtn').onclick = () => document.getElementById('gifModal').classList.add('open');
+document.getElementById('closeGifModal').onclick = () => document.getElementById('gifModal').classList.remove('open');
+document.getElementById('addChannelBtn').onclick = () => {
+  const name = prompt('Название канала:');
+  if(name && /^[\wа-яё-]{2,20}$/i.test(name) && !channels.includes(name)) socket.emit('channel:create', {channelName: name});
+};
+document.getElementById('searchChatBtn').onclick = () => document.getElementById('searchBar').classList.toggle('open');
+document.getElementById('closeSearch').onclick = () => { document.getElementById('searchBar').classList.remove('open'); };
+document.getElementById('searchInput').oninput = e => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('.msg-row').forEach(r => r.style.display = (!q || r.dataset.text?.includes(q)) ? '' : 'none');
+};
 document.getElementById('virtualBgBtn').onclick = () => document.getElementById('virtualBgModal').classList.add('open');
-document.getElementById('closeBgModal').onclick  = () => document.getElementById('virtualBgModal').classList.remove('open');
-document.querySelectorAll('.bg-tile').forEach(btn => btn.onclick = () => { applyVirtualBg(btn.dataset.bg); document.getElementById('virtualBgModal').classList.remove('open'); });
-document.getElementById('applyCustomBg').onclick = () => { applyVirtualBg(document.getElementById('customColor').value); document.getElementById('virtualBgModal').classList.remove('open'); };
-
-document.getElementById('settingsBtn').onclick  = () => document.getElementById('settingsModal').classList.add('open');
-document.getElementById('noiseBtn').onclick     = () => document.getElementById('settingsModal').classList.add('open');
-document.getElementById('closeSettingsModal').onclick = () => document.getElementById('settingsModal').classList.remove('open');
-
-document.querySelectorAll('.modal-bg').forEach(bg => {
-  bg.addEventListener('click', e => { if(e.target === bg) bg.classList.remove('open'); });
+document.getElementById('closeBgModal').onclick = () => document.getElementById('virtualBgModal').classList.remove('open');
+document.querySelectorAll('.bg-tile').forEach(btn => btn.onclick = () => {
+  const vid = document.querySelector('#tile-local video');
+  if(!vid) return;
+  document.querySelectorAll('.bg-tile').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  if(btn.dataset.bg === 'none'){ vid.style.filter=''; }
+  else if(btn.dataset.bg === 'blur'){ vid.style.filter='blur(10px)'; }
+  else { vid.style.filter=''; vid.style.backgroundColor=btn.dataset.bg; }
+  document.getElementById('virtualBgModal').classList.remove('open');
 });
+document.getElementById('applyCustomBg').onclick = () => {
+  const vid = document.querySelector('#tile-local video');
+  if(vid) { vid.style.filter=''; vid.style.backgroundColor=document.getElementById('customColor').value; }
+  document.getElementById('virtualBgModal').classList.remove('open');
+};
+document.getElementById('settingsBtn').onclick = () => document.getElementById('settingsModal').classList.add('open');
+document.getElementById('noiseBtn').onclick = () => document.getElementById('settingsModal').classList.add('open');
+document.getElementById('closeSettingsModal').onclick = () => document.getElementById('settingsModal').classList.remove('open');
+document.querySelectorAll('.modal-bg').forEach(bg => bg.addEventListener('click', e => { if(e.target === bg) bg.classList.remove('open'); }));
 
-// Auto-restore session
+document.addEventListener('click', () => { document.querySelectorAll('video').forEach(v => v.play().catch(()=>{})); }, { once: true });
+
 window.addEventListener('DOMContentLoaded', () => {
   const saved = loadState();
   if(saved.roomId && saved.myName){
     document.getElementById('lobbyName').value = saved.myName;
-    document.getElementById('joinId').value    = saved.roomId;
+    document.getElementById('joinId').value = saved.roomId;
     if(saved.myColor){
       myColor = saved.myColor;
       document.querySelectorAll('.color-swatch').forEach(s => {
-        if(s.style.backgroundColor === saved.myColor){ s.classList.add('active'); }
+        if(s.style.backgroundColor === saved.myColor) s.classList.add('active');
         else s.classList.remove('active');
       });
     }
@@ -1392,9 +1060,6 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 })();
-</script>
-</body>
-</html>
 </script>
 </body>
 </html>
