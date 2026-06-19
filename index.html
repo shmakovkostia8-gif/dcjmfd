@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ══════════════ NEXUS v3.1 — DARK TERMINAL AESTHETIC ══════════════ */
+/* ══════════════ NEXUS v3.2 — DARK TERMINAL AESTHETIC ══════════════ */
 :root {
   --bg0:   #0d0f12;
   --bg1:   #13161b;
@@ -543,11 +543,14 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
 const COLORS = ['#3ecf8e','#60a5fa','#a78bfa','#f59e0b','#ef4444','#34d399','#f472b6','#fb923c'];
 const EMOJIS = ['😄','😂','🔥','❤️','👍','👏','🎉','😮','😢','😎','💯','🚀','✨','🤔','😭','🤯','👀','🎮','🍕','💪','🙌','⚡','🌟','🎸'];
 const QUICK_SEND = ['🎉','😂','🔥','❤️','👍','👏','😮','😢','😎','💯','🚀','✨','🤔','🤯','👀','💀','🎮','🍕','🎈','🎊'];
+// ⚡ Если не работает за NAT, добавь TURN-серверы сюда:
 const ICE_SERVERS = [
   {urls:'stun:stun.l.google.com:19302'},
   {urls:'stun:stun1.l.google.com:19302'},
   {urls:'stun:stun2.l.google.com:19302'},
-  {urls:'stun:global.stun.twilio.com:3478'}
+  // Пример бесплатного TURN (работает ограниченное время):
+  // {urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject'},
+  // {urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject'}
 ];
 
 // ══ STATE ══
@@ -558,12 +561,10 @@ let currentCamera = 'user';
 let peers = {}, channels = ['general'], currentChannel = 'general';
 let messages = {}, typing = {}, peerMuted = {};
 let callStart, timerInt;
-let mediaRecorder, recordedChunks = [], isRecording = false;
 let audioCtx, analyserNode, speakingInt;
 let videoZoneCollapsed = false;
 let typingTimeout;
 
-// Audio settings
 let audioSettings = {
   noiseSuppression: true,
   echoCancellation: true,
@@ -571,7 +572,6 @@ let audioSettings = {
   stereo: false
 };
 
-// ══ DOM ══
 const $lobby  = document.getElementById('lobby');
 const $app    = document.getElementById('app');
 
@@ -684,36 +684,47 @@ function renderText(t){
 }
 
 // ══════════════════════════════════════
-// AUDIO — THE FIX
+// AUDIO – с fallback на случай неподдерживаемых параметров
 // ══════════════════════════════════════
 async function getAudioStream(){
-  const constraints = {
-    audio: {
-      echoCancellation: audioSettings.echoCancellation,
-      noiseSuppression: audioSettings.noiseSuppression,
-      autoGainControl: audioSettings.autoGainControl,
-      channelCount: audioSettings.stereo ? 2 : 1,
-      sampleRate: audioSettings.stereo ? 48000 : 48000,
-      sampleSize: 16
-    },
-    video: false
-  };
+  // Сначала пробуем с расширенными настройками
   try {
-    return await navigator.mediaDevices.getUserMedia(constraints);
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: audioSettings.echoCancellation,
+        noiseSuppression: audioSettings.noiseSuppression,
+        autoGainControl: audioSettings.autoGainControl,
+        channelCount: audioSettings.stereo ? 2 : 1,
+        sampleRate: audioSettings.stereo ? 48000 : 48000,
+        sampleSize: 16
+      },
+      video: false
+    });
+    console.log('🎤 Аудио получено с расширенными настройками');
+    return stream;
   } catch(e) {
-    console.error('Audio error:', e);
-    return null;
+    console.warn('⚠️ Расширенные настройки звука не поддерживаются, пробую базовый захват:', e);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      console.log('🎤 Аудио получено с базовыми настройками');
+      return stream;
+    } catch(e2) {
+      console.error('❌ Полностью не удалось получить микрофон:', e2);
+      return null;
+    }
   }
 }
 
 // Build outgoing stream from current tracks
 function buildOutgoingStream(){
   const s = new MediaStream();
-  // Always add audio if available
   if(localStream){
-    localStream.getAudioTracks().forEach(t => { if(t.enabled || !t.enabled) s.addTrack(t); });
+    localStream.getAudioTracks().forEach(t => {
+      // Всегда добавляем трек микрофона, даже если он выключен (enabled=false)
+      s.addTrack(t);
+    });
   }
-  // Video: screen first, then camera
+  // Видео: сначала экран, потом камера
   if(screenOn && screenStream){
     screenStream.getVideoTracks().forEach(t => s.addTrack(t));
   } else if(camOn && localStream){
@@ -723,26 +734,37 @@ function buildOutgoingStream(){
   return s;
 }
 
-// Replace tracks in all peer connections
+// Sync tracks to all peers
 function syncPeerTracks(){
   buildOutgoingStream();
   for(const sid in peers){
     const pc = peers[sid].pc;
-    if(!pc) continue;
+    if(!pc || pc.signalingState === 'closed') continue;
     const senders = pc.getSenders();
-    // Audio
+
+    // Аудио
     const audioTrack = outgoingStream.getAudioTracks()[0];
     const audioSender = senders.find(s => s.track?.kind === 'audio');
-    if(audioSender && audioTrack){
-      audioSender.replaceTrack(audioTrack).catch(()=>{});
-    } else if(audioTrack && !audioSender){
+    if(audioSender){
+      if(audioTrack){
+        audioSender.replaceTrack(audioTrack).catch(e => console.warn('replaceTrack audio error:', e));
+      } else {
+        // Если трека нет (микрофон не дали), убираем отправку аудио
+        pc.removeTrack(audioSender);
+      }
+    } else if(audioTrack){
       pc.addTrack(audioTrack, outgoingStream);
     }
-    // Video
+
+    // Видео
     const videoTrack = outgoingStream.getVideoTracks()[0];
     const videoSender = senders.find(s => s.track?.kind === 'video');
     if(videoSender){
-      videoSender.replaceTrack(videoTrack || null).catch(()=>{});
+      if(videoTrack){
+        videoSender.replaceTrack(videoTrack).catch(e => console.warn('replaceTrack video error:', e));
+      } else {
+        pc.removeTrack(videoSender);
+      }
     } else if(videoTrack){
       pc.addTrack(videoTrack, outgoingStream);
     }
@@ -754,8 +776,7 @@ function syncPeerTracks(){
 // ══════════════════════════════════════
 function buildPC(peerId, peerName, peerColor){
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-  // Add current outgoing tracks
+  
   buildOutgoingStream();
   outgoingStream.getTracks().forEach(t => pc.addTrack(t, outgoingStream));
 
@@ -766,29 +787,29 @@ function buildPC(peerId, peerName, peerColor){
   pc.oniceconnectionstatechange = () => {
     console.log(`ICE ${peerId}: ${pc.iceConnectionState}`);
     if(pc.iceConnectionState === 'failed'){
+      console.warn('⚠️ ICE failed, пробую перезапустить ICE');
       pc.restartIce();
     }
   };
 
   pc.onconnectionstatechange = () => {
     console.log(`PC ${peerId}: ${pc.connectionState}`);
+    if(pc.connectionState === 'connected'){
+      console.log('✅ Соединение установлено!');
+    } else if(pc.connectionState === 'failed' || pc.connectionState === 'disconnected'){
+      console.warn('❌ Соединение разорвано');
+    }
   };
 
-  // ★ KEY FIX: ontrack — properly attach remote audio+video
   pc.ontrack = e => {
-    console.log(`ontrack from ${peerId}: kind=${e.track.kind}, streams=${e.streams.length}`);
-
+    console.log(`📡 ontrack от ${peerId}: kind=${e.track.kind}, streams=${e.streams.length}`);
     if(!peers[peerId]) return;
     const peer = peers[peerId];
-
-    // Always use the first stream from event
     const stream = e.streams[0] || new MediaStream([e.track]);
-
-    // Store stream
+    
     if(!peer.stream){
       peer.stream = stream;
     } else {
-      // add track to existing stream if needed
       if(!peer.stream.getTracks().find(t => t.id === e.track.id)){
         peer.stream.addTrack(e.track);
       }
@@ -799,16 +820,13 @@ function buildPC(peerId, peerName, peerColor){
     const vid = tile.querySelector('video');
     if(!vid) return;
 
-    // Attach stream to video element
     if(vid.srcObject !== peer.stream){
       vid.srcObject = peer.stream;
     }
 
-    // CRITICAL: ensure video plays (handles autoplay policy)
     vid.muted = !!peerMuted[peerId];
     vid.play().catch(err => {
-      console.warn('Autoplay blocked, retrying:', err);
-      // User gesture might be needed — add click handler
+      console.warn('Автовоспроизведение заблокировано, добавлен клик-обработчик');
       tile.addEventListener('click', () => vid.play().catch(()=>{}), {once:true});
     });
 
@@ -824,14 +842,12 @@ function buildPC(peerId, peerName, peerColor){
 
 async function callPeer(sid, name, color){
   if(peers[sid]) return;
+  console.log(`📞 Звонок участнику ${name} (${sid})`);
   const pc = buildPC(sid, name, color);
   peers[sid] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
   addPeerTile(sid, name, color||'#888');
   try {
-    const offer = await pc.createOffer({
-      offerToReceiveAudio: true,
-      offerToReceiveVideo: true
-    });
+    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
     socket.emit('rtc:offer', {to: sid, offer});
   } catch(e) {
@@ -900,7 +916,6 @@ function addPeerTile(sid, name, color){
   if(document.getElementById(`tile-${sid}`)) return;
   const tile = mkTile(sid, name, color||'#888', false);
   document.getElementById('videoGrid').appendChild(tile);
-  // Fix: set mic icon color based on peer state
   const icon = tile.querySelector(`#mic-icon-${sid}`);
   if(icon && peers[sid]) icon.setAttribute('stroke', peers[sid].micEnabled ? '#3ecf8e':'#ef4444');
 }
@@ -1005,7 +1020,6 @@ async function toggleScreen(){
 }
 
 async function restartAudio(){
-  // Stop old tracks
   if(localStream) localStream.getAudioTracks().forEach(t => {t.stop(); localStream.removeTrack(t);});
   const newAudio = await getAudioStream();
   if(!newAudio){ notify('Нет доступа к микрофону', 'red'); return; }
@@ -1030,7 +1044,6 @@ function setupSocket(){
     renderChannels();
     messages[currentChannel] = msgs || [];
     (msgs||[]).forEach(addMsgDOM);
-    // Call all existing users
     users.forEach(u => {
       if(u.sid !== socket.id) callPeer(u.sid, u.name, u.color);
     });
@@ -1058,7 +1071,6 @@ function setupSocket(){
   });
 
   socket.on('rtc:offer', async ({from, name, color, offer}) => {
-    // Only answer if we don't already have a connection
     if(peers[from] && peers[from].pc?.signalingState !== 'closed') return;
     const pc = buildPC(from, name, color);
     peers[from] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
@@ -1146,7 +1158,7 @@ function setupSocket(){
 }
 
 // ══════════════════════════════════════
-// UI RENDER
+// UI RENDER (все функции те же, но с парой косметических правок)
 // ══════════════════════════════════════
 function renderChannels(){
   const cont = document.getElementById('channelList');
@@ -1283,7 +1295,6 @@ function renderTyping(){
   }
 }
 
-// Virtual bg
 function applyVirtualBg(type){
   const vid = document.querySelector('#tile-local video');
   if(!vid) return;
@@ -1294,7 +1305,6 @@ function applyVirtualBg(type){
   else { vid.style.filter=''; vid.style.backgroundColor=type; }
 }
 
-// Send message
 function sendMsg(){
   const inp = document.getElementById('msg-input');
   const t = inp.value.trim();
@@ -1321,7 +1331,6 @@ window.join = async function(mode){
     roomId = currentGenId;
   }
 
-  // Connect socket
   try {
     socket = io(serverUrl, {transports:['websocket','polling'], timeout:8000, reconnection:true, reconnectionAttempts:5});
     await new Promise((res,rej) => {
@@ -1336,7 +1345,6 @@ window.join = async function(mode){
 
   setupSocket();
 
-  // Get audio stream
   localStream = await getAudioStream();
   if(localStream){
     micOn = true;
@@ -1350,17 +1358,14 @@ window.join = async function(mode){
   buildOutgoingStream();
   socket.emit('join', {roomId, name: myName, color: myColor});
 
-  // Show app
   $lobby.style.display = 'none';
   $app.style.display = 'flex';
   document.getElementById('topRoom').textContent = roomId;
 
-  // Update mic button state
   const micBtn = document.getElementById('micBtn');
   micBtn.className = `call-btn ${micOn?'on':'off'}`;
   micBtn.innerHTML = `${micOn?'🎤':'🔇'} <span class="label">${micOn?'Микрофон':'Откл. мик.'}</span>`;
 
-  // Timer
   callStart = Date.now();
   clearInterval(timerInt);
   timerInt = setInterval(() => {
@@ -1373,7 +1378,7 @@ window.join = async function(mode){
   addMyTile();
   renderParticipants();
   saveState();
-  sysMsg('Добро пожаловать в Nexus! Для звонка нужно, чтобы оба участника были в одной комнате.');
+  sysMsg('Добро пожаловать в Nexus!');
 };
 
 function leaveRoom(){
@@ -1462,20 +1467,17 @@ document.getElementById('filePick').onchange = e => {
 
 document.getElementById('mobileMenuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
 
-// Video zone collapse
 document.getElementById('vzToggle').onclick = () => {
   videoZoneCollapsed = !videoZoneCollapsed;
   document.getElementById('videoZone').classList.toggle('collapsed', videoZoneCollapsed);
   document.getElementById('vzToggle').textContent = videoZoneCollapsed ? 'Развернуть ▼' : 'Свернуть ▲';
 };
 
-// Virtual bg
 document.getElementById('virtualBgBtn').onclick = () => document.getElementById('virtualBgModal').classList.add('open');
 document.getElementById('closeBgModal').onclick  = () => document.getElementById('virtualBgModal').classList.remove('open');
 document.querySelectorAll('.bg-tile').forEach(btn => btn.onclick = () => { applyVirtualBg(btn.dataset.bg); document.getElementById('virtualBgModal').classList.remove('open'); });
 document.getElementById('applyCustomBg').onclick = () => { applyVirtualBg(document.getElementById('customColor').value); document.getElementById('virtualBgModal').classList.remove('open'); };
 
-// Settings / audio
 document.getElementById('settingsBtn').onclick  = () => document.getElementById('settingsModal').classList.add('open');
 document.getElementById('noiseBtn').onclick     = () => document.getElementById('settingsModal').classList.add('open');
 document.getElementById('closeSettingsModal').onclick = () => document.getElementById('settingsModal').classList.remove('open');
@@ -1488,12 +1490,10 @@ document.getElementById('applyAudioSettings').onclick = async () => {
   await restartAudio();
 };
 
-// Close modal on backdrop click
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('click', e => { if(e.target === bg) bg.classList.remove('open'); });
 });
 
-// ══ Auto-restore session ══
 window.addEventListener('DOMContentLoaded', () => {
   const saved = loadState();
   if(saved.roomId && saved.myName){
