@@ -17,22 +17,16 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // для возможных base64 изображений
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname)));
 
 app.get('/', (_req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Структура комнаты:
-// {
-//   channels: Map<channelName, { messages: Array, createdAt: number }>,
-//   users: Map<socketId, { name, color, channel }>,
-//   created: number
-// }
 const rooms = new Map();
+const MAX_MESSAGES_PER_CHANNEL = 200;
 
-// Вспомогательные функции
 function getRoom(roomId) {
     if (!rooms.has(roomId)) {
         rooms.set(roomId, {
@@ -44,14 +38,11 @@ function getRoom(roomId) {
     return rooms.get(roomId);
 }
 
-// Ограничение истории сообщений (максимум 200 на канал)
-const MAX_MESSAGES_PER_CHANNEL = 200;
-
-// Автоочистка пустых комнат (каждые 5 минут)
+// Очистка пустых комнат
 setInterval(() => {
     const now = Date.now();
     for (const [roomId, room] of rooms.entries()) {
-        if (room.users.size === 0 && now - room.created > 600000) { // 10 минут
+        if (room.users.size === 0 && now - room.created > 600000) {
             rooms.delete(roomId);
             console.log(`🧹 Комната ${roomId} удалена (пуста)`);
         }
@@ -66,7 +57,6 @@ io.on('connection', (socket) => {
 
     console.log(`🔌 Новое подключение: ${socket.id}`);
 
-    // Событие присоединения к комнате
     socket.on('join', ({ roomId, name, color }) => {
         if (!roomId || typeof roomId !== 'string') return;
         
@@ -76,16 +66,13 @@ io.on('connection', (socket) => {
         
         const room = getRoom(currentRoom);
         
-        // Проверяем, не занят ли уже такой же сокет
         if (room.users.has(socket.id)) {
             room.users.delete(socket.id);
         }
         
-        // Сохраняем пользователя
         room.users.set(socket.id, { name: myName, color: myColor, channel: currentChannel });
         socket.join(currentRoom);
         
-        // Отправляем новому участнику состояние комнаты
         const channelsList = Array.from(room.channels.keys());
         const channelHistory = (room.channels.get(currentChannel)?.messages || []).slice(-MAX_MESSAGES_PER_CHANNEL);
         const usersList = Array.from(room.users.entries()).map(([sid, u]) => ({
@@ -99,7 +86,6 @@ io.on('connection', (socket) => {
             users: usersList
         });
         
-        // Оповещаем остальных о новом участнике
         socket.to(currentRoom).emit('peer:join', {
             sid: socket.id,
             name: myName,
@@ -110,7 +96,6 @@ io.on('connection', (socket) => {
         console.log(`📥 ${myName} (${socket.id}) вошёл в комнату ${currentRoom}, канал ${currentChannel}`);
     });
     
-    // Создание нового канала
     socket.on('channel:create', ({ channelName }) => {
         if (!currentRoom) return;
         const room = rooms.get(currentRoom);
@@ -121,12 +106,9 @@ io.on('connection', (socket) => {
             room.channels.set(normalizedName, { messages: [], createdAt: Date.now() });
             io.to(currentRoom).emit('channel:added', normalizedName);
             console.log(`📢 В комнате ${currentRoom} создан канал ${normalizedName}`);
-        } else if (room.channels.has(normalizedName)) {
-            socket.emit('system:msg', { name: 'Система', text: `Канал "${normalizedName}" уже существует` });
         }
     });
     
-    // Переключение канала
     socket.on('channel:switch', ({ channelName }) => {
         if (!currentRoom) return;
         const room = rooms.get(currentRoom);
@@ -139,10 +121,8 @@ io.on('connection', (socket) => {
         const messages = room.channels.get(channelName).messages.slice(-MAX_MESSAGES_PER_CHANNEL);
         socket.emit('channel:switched', { channelName, messages });
         socket.to(currentRoom).emit('peer:channel', { sid: socket.id, channel: channelName });
-        console.log(`🔄 ${myName} переключился на канал ${channelName}`);
     });
     
-    // Отправка сообщения
     socket.on('chat:send', ({ text }) => {
         if (!currentRoom || !text?.trim()) return;
         const room = rooms.get(currentRoom);
@@ -161,16 +141,13 @@ io.on('connection', (socket) => {
         };
         
         channel.messages.push(msg);
-        // Ограничиваем историю
         if (channel.messages.length > MAX_MESSAGES_PER_CHANNEL) {
             channel.messages.shift();
         }
         
         io.to(currentRoom).emit('chat:msg', { ...msg, channel: currentChannel });
-        console.log(`💬 ${myName} в #${currentChannel}: ${msg.text.substring(0, 50)}`);
     });
     
-    // Реакция на сообщение (эмуляция)
     socket.on('chat:react', ({ msgId, emoji }) => {
         if (!currentRoom || !msgId || !emoji) return;
         io.to(currentRoom).emit('chat:react', {
@@ -185,7 +162,7 @@ io.on('connection', (socket) => {
     // WebRTC сигналинг
     socket.on('rtc:offer', ({ to, offer }) => {
         if (!to || !offer) return;
-        io.to(to).emit('rtc:offer', { from: socket.id, name: myName, offer });
+        io.to(to).emit('rtc:offer', { from: socket.id, name: myName, color: myColor, offer });
     });
     
     socket.on('rtc:answer', ({ to, answer }) => {
@@ -198,14 +175,12 @@ io.on('connection', (socket) => {
         io.to(to).emit('rtc:ice', { from: socket.id, candidate });
     });
     
-    // Состояние медиа (микрофон, камера)
     socket.on('media:state', (state) => {
         if (currentRoom && typeof state === 'object') {
             socket.to(currentRoom).emit('media:state', { sid: socket.id, ...state });
         }
     });
     
-    // Печатает
     socket.on('typing', (isTyping) => {
         if (currentRoom) {
             socket.to(currentRoom).emit('typing', {
@@ -217,7 +192,6 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Системное сообщение (например, о демонстрации экрана)
     socket.on('system:msg', (text) => {
         if (currentRoom && typeof text === 'string') {
             io.to(currentRoom).emit('system:msg', {
@@ -228,31 +202,22 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Пинг (для измерения задержки клиента)
     socket.on('ping', (callback) => {
         if (typeof callback === 'function') callback({ pong: Date.now() });
     });
     
-    // Обработка отключения
     socket.on('disconnect', () => {
         if (currentRoom) {
             const room = rooms.get(currentRoom);
             if (room) {
                 room.users.delete(socket.id);
                 io.to(currentRoom).emit('peer:leave', { sid: socket.id, name: myName });
-                console.log(`🚪 ${myName} (${socket.id}) покинул комнату ${currentRoom}, осталось ${room.users.size} участников`);
-                
-                // Если комната опустела — она удалится по таймеру, но можно удалить сразу
-                if (room.users.size === 0) {
-                    // не удаляем сразу, даём время на переподключение
-                    console.log(`⏳ Комната ${currentRoom} опустела, будет удалена через 10 минут`);
-                }
+                console.log(`🚪 ${myName} (${socket.id}) покинул комнату ${currentRoom}`);
             }
         }
     });
 });
 
-// Обработка ошибок сервера
 server.on('error', (err) => {
     console.error('❌ Ошибка сервера:', err);
 });
