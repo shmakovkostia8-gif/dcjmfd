@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ══════════════ NEXUS v4 — ULTIMATE STABLE ══════════════ */
+/* ══════════════ NEXUS v4.1 — Full Stable ══════════════ */
 :root {
   --bg0:   #0d0f12;
   --bg1:   #13161b;
@@ -351,10 +351,6 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
         <label class="field-label">Цвет аватарки</label>
         <div class="color-row" id="colorRow"></div>
       </div>
-      <div class="field">
-        <label class="field-label">Адрес сервера</label>
-        <input class="field-input" id="serverUrl" placeholder="http://localhost:7432" autocomplete="off">
-      </div>
       <div class="divider">создать комнату</div>
       <div class="room-id-row">
         <span class="room-id-val" id="genId">NOVA-XXXX</span>
@@ -543,7 +539,6 @@ input,textarea{font-family:'DM Sans',sans-serif;outline:none;border:none;}
 const COLORS = ['#3ecf8e','#60a5fa','#a78bfa','#f59e0b','#ef4444','#34d399','#f472b6','#fb923c'];
 const EMOJIS = ['😄','😂','🔥','❤️','👍','👏','🎉','😮','😢','😎','💯','🚀','✨','🤔','😭','🤯','👀','🎮','🍕','💪','🙌','⚡','🌟','🎸'];
 const QUICK_SEND = ['🎉','😂','🔥','❤️','👍','👏','😮','😢','😎','💯','🚀','✨','🤔','🤯','👀','💀','🎮','🍕','🎈','🎊'];
-// ⚡ Мощный набор ICE-серверов с TURN
 const ICE_SERVERS = [
   {urls:'stun:stun.l.google.com:19302'},
   {urls:'stun:stun1.l.google.com:19302'},
@@ -563,11 +558,9 @@ const ICE_SERVERS = [
 
 // ══ STATE ══
 let socket;
-let localStream;        // содержит аудио и возможно видео с камеры
-let screenStream;       // стрим демонстрации экрана
-let audioTrack;         // отдельная ссылка на аудиотрек
-let cameraVideoTrack;   // трек с камеры (если есть)
-let screenVideoTrack;   // трек с экрана (если есть)
+let audioTrack = null;
+let cameraVideoTrack = null;
+let screenVideoTrack = null;
 let roomId, myName, myColor = COLORS[0];
 let micOn = true, camOn = false, screenOn = false;
 let currentCamera = 'user';
@@ -588,24 +581,25 @@ let audioSettings = {
 const $lobby  = document.getElementById('lobby');
 const $app    = document.getElementById('app');
 
+// ══ Сервер автоматически ══
+const SERVER_URL = window.location.origin;
+
 // ── Session storage ──
 function saveState(){
   if(!roomId) return;
   sessionStorage.setItem('nx_room', roomId);
   sessionStorage.setItem('nx_name', myName);
   sessionStorage.setItem('nx_color', myColor);
-  sessionStorage.setItem('nx_server', document.getElementById('serverUrl').value);
 }
 function loadState(){
   return {
     roomId: sessionStorage.getItem('nx_room'),
     myName: sessionStorage.getItem('nx_name'),
-    myColor: sessionStorage.getItem('nx_color'),
-    serverUrl: sessionStorage.getItem('nx_server')
+    myColor: sessionStorage.getItem('nx_color')
   };
 }
 function clearState(){
-  ['nx_room','nx_name','nx_color','nx_server'].forEach(k => sessionStorage.removeItem(k));
+  ['nx_room','nx_name','nx_color'].forEach(k => sessionStorage.removeItem(k));
 }
 
 // ── Room ID generator ──
@@ -619,13 +613,6 @@ document.getElementById('regenerateBtn').onclick = () => {
   currentGenId = genRoomId();
   document.getElementById('genId').innerText = currentGenId;
 };
-
-// ── Set default server URL ──
-(function(){
-  const el = document.getElementById('serverUrl');
-  const o = window.location.origin;
-  el.value = (o === 'file://' || o === 'null') ? 'http://localhost:7432' : o;
-})();
 
 // ── Color swatches ──
 const colorRow = document.getElementById('colorRow');
@@ -697,195 +684,153 @@ function renderText(t){
 }
 
 // ══════════════════════════════════════
-// AUDIO / VIDEO CAPTURE
+// MEDIA
 // ══════════════════════════════════════
 async function getAudioStream(){
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    console.log('🎤 Микрофон захвачен');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     return stream;
-  } catch(e){
-    console.error('Ошибка микрофона:', e);
-    return null;
-  }
+  } catch(e){ return null; }
 }
 
 async function getCameraStream(){
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: currentCamera, width:{ideal:1280}, height:{ideal:720} } });
-    console.log('📹 Камера захвачена');
     return stream;
-  } catch(e){
-    console.error('Ошибка камеры:', e);
-    return null;
-  }
+  } catch(e){ return null; }
 }
 
-// ══════════════════════════════════════
-// УПРАВЛЕНИЕ ТРЕКАМИ
-// ══════════════════════════════════════
-function getCurrentVideoTrack(){
-  if(screenOn && screenVideoTrack) return screenVideoTrack;
-  if(camOn && cameraVideoTrack) return cameraVideoTrack;
-  return null;
-}
-
-// Отправляет текущее видео всем peer connections
-function updateAllPeerVideoTracks(){
-  const videoTrack = getCurrentVideoTrack();
-  for(const sid in peers){
+// Основная функция смены видео для всех peer connections
+function replaceVideoTrackForAll(newTrack) {
+  for (const sid in peers) {
     const pc = peers[sid].pc;
-    if(!pc) continue;
+    if (!pc) continue;
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-    if(sender){
-      sender.replaceTrack(videoTrack).catch(e => console.warn('replaceTrack error:', e));
+    if (sender) {
+      sender.replaceTrack(newTrack).catch(e => console.warn('replaceTrack error:', e));
+    } else if (newTrack) {
+      pc.addTrack(newTrack, new MediaStream([newTrack]));
     }
   }
 }
 
 // Включение/выключение микрофона
-function setMicEnabled(enabled){
-  micOn = enabled;
-  if(audioTrack) audioTrack.enabled = enabled;
+function toggleMic() {
+  micOn = !micOn;
+  if (audioTrack) audioTrack.enabled = micOn;
   const btn = document.getElementById('micBtn');
-  btn.className = `call-btn ${micOn?'on':'off'}`;
-  btn.innerHTML = `${micOn?'🎤':'🔇'} <span class="label">${micOn?'Микрофон':'Откл. мик.'}</span>`;
+  btn.className = `call-btn ${micOn ? 'on' : 'off'}`;
+  btn.innerHTML = `${micOn ? '🎤' : '🔇'} <span class="label">${micOn ? 'Микрофон' : 'Откл. мик.'}</span>`;
   setTileMic('local', micOn);
-  socket?.emit('media:state', {mic: micOn, cam: camOn});
+  socket?.emit('media:state', { mic: micOn, cam: camOn });
   renderParticipants();
 }
 
 // Переключение камеры
-async function toggleCamera(){
-  if(camOn){
-    // выключаем камеру
-    if(cameraVideoTrack){
+async function toggleCam() {
+  if (camOn) {
+    if (cameraVideoTrack) {
       cameraVideoTrack.stop();
       cameraVideoTrack = null;
     }
     camOn = false;
     document.getElementById('switchCamBtn').style.display = 'none';
-    updateLocalTileVideo();
-    updateAllPeerVideoTracks();
+    replaceVideoTrackForAll(null);
+    updateLocalVideoTile();
   } else {
     const stream = await getCameraStream();
-    if(stream){
-      cameraVideoTrack = stream.getVideoTracks()[0];
-      cameraVideoTrack.onended = () => {
-        // если камера была остановлена браузером
-        if(camOn) toggleCamera();
-      };
-      camOn = true;
-      document.getElementById('switchCamBtn').style.display = 'flex';
-      updateLocalTileVideo();
-      updateAllPeerVideoTracks();
-    }
+    if (!stream) return;
+    cameraVideoTrack = stream.getVideoTracks()[0];
+    cameraVideoTrack.onended = () => { if (camOn) toggleCam(); };
+    camOn = true;
+    document.getElementById('switchCamBtn').style.display = 'flex';
+    replaceVideoTrackForAll(cameraVideoTrack);
+    updateLocalVideoTile();
   }
   const btn = document.getElementById('camBtn');
-  btn.className = `call-btn ${camOn?'on':'off'}`;
-  btn.innerHTML = `${camOn?'📹':'📷'} <span class="label">${camOn?'Камера':'Откл. кам.'}</span>`;
-  socket?.emit('media:state', {mic: micOn, cam: camOn});
+  btn.className = `call-btn ${camOn ? 'on' : 'off'}`;
+  btn.innerHTML = `${camOn ? '📹' : '📷'} <span class="label">${camOn ? 'Камера' : 'Откл. кам.'}</span>`;
+  socket?.emit('media:state', { mic: micOn, cam: camOn });
 }
 
 // Демонстрация экрана
-async function toggleScreen(){
-  if(screenOn){
-    if(screenVideoTrack){
+async function toggleScreen() {
+  if (screenOn) {
+    if (screenVideoTrack) {
       screenVideoTrack.stop();
       screenVideoTrack = null;
     }
     screenOn = false;
     document.getElementById('shareBtn').classList.remove('active');
-    notify('Демонстрация экрана остановлена');
-    updateLocalTileVideo();
-    updateAllPeerVideoTracks();
+    replaceVideoTrackForAll(camOn ? cameraVideoTrack : null);
+    updateLocalVideoTile();
   } else {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30, cursor: 'always' }, audio: false });
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       screenVideoTrack = stream.getVideoTracks()[0];
-      screenVideoTrack.onended = () => {
-        if(screenOn) toggleScreen();
-      };
+      screenVideoTrack.onended = () => { if (screenOn) toggleScreen(); };
       screenOn = true;
       document.getElementById('shareBtn').classList.add('active');
-      notify('Демонстрация экрана запущена', 'green');
-      updateLocalTileVideo();
-      updateAllPeerVideoTracks();
-    } catch(e){
-      console.error('Ошибка демонстрации:', e);
-    }
+      replaceVideoTrackForAll(screenVideoTrack);
+      updateLocalVideoTile();
+    } catch(e) {}
   }
 }
 
 // ══════════════════════════════════════
 // WebRTC
 // ══════════════════════════════════════
-function buildPC(peerId, peerName, peerColor){
+function createPC(peerId, peerName, peerColor) {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-  // Добавляем аудиотрек всегда
-  if(audioTrack) pc.addTrack(audioTrack, new MediaStream([audioTrack]));
-  // Добавляем видео, если есть
-  const videoTrack = getCurrentVideoTrack();
-  if(videoTrack) pc.addTrack(videoTrack, new MediaStream([videoTrack]));
+  if (audioTrack) pc.addTrack(audioTrack, new MediaStream([audioTrack]));
+  const videoTrack = camOn ? cameraVideoTrack : null;
+  if (videoTrack) pc.addTrack(videoTrack, new MediaStream([videoTrack]));
 
   pc.onicecandidate = e => {
-    if(e.candidate) socket.emit('rtc:ice', {to: peerId, candidate: e.candidate});
+    if (e.candidate) socket.emit('rtc:ice', { to: peerId, candidate: e.candidate });
   };
 
   pc.oniceconnectionstatechange = () => {
     console.log(`ICE ${peerId}: ${pc.iceConnectionState}`);
-    if(pc.iceConnectionState === 'failed'){
-      pc.restartIce();
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    console.log(`PC ${peerId}: ${pc.connectionState}`);
   };
 
   pc.ontrack = e => {
-    console.log(`📡 ontrack от ${peerId}: kind=${e.track.kind}`);
-    if(!peers[peerId]) return;
-    const peer = peers[peerId];
+    console.log(`📡 ontrack от ${peerId}: ${e.track.kind}`);
+    if (!peers[peerId]) return;
     const stream = e.streams[0] || new MediaStream([e.track]);
-    peer.stream = stream;
+    peers[peerId].stream = stream;
 
-    const tile = document.getElementById(`tile-${peerId}`);
-    if(!tile) return;
-    const vid = tile.querySelector('video');
-    if(!vid) return;
-
-    if(vid.srcObject !== stream){
+    const vid = document.querySelector(`#tile-${peerId} video`);
+    if (vid) {
       vid.srcObject = stream;
-    }
-    vid.play().catch(()=>{});
-
-    if(e.track.kind === 'video'){
-      vid.style.display = 'block';
-      const ph = tile.querySelector('.vtile-ph');
-      if(ph) ph.style.display = 'none';
+      vid.play().catch(()=>{});
+      if (e.track.kind === 'video') {
+        vid.style.display = 'block';
+        const ph = document.querySelector(`#tile-${peerId} .vtile-ph`);
+        if (ph) ph.style.display = 'none';
+      }
     }
   };
 
   return pc;
 }
 
-async function callPeer(sid, name, color){
-  if(peers[sid]) return;
+async function callPeer(sid, name, color) {
+  if (peers[sid]) return;
   console.log(`📞 Звонок ${name}`);
-  const pc = buildPC(sid, name, color);
-  peers[sid] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
+  const pc = createPC(sid, name, color);
+  peers[sid] = { pc, name, color: color||'#888', micEnabled: true, videoEnabled: false, stream: null };
   addPeerTile(sid, name, color||'#888');
   try {
     const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
     await pc.setLocalDescription(offer);
-    socket.emit('rtc:offer', {to: sid, offer});
-  } catch(e){ console.error(e); }
+    socket.emit('rtc:offer', { to: sid, offer });
+  } catch(e) {}
 }
 
-function removePeer(sid){
-  if(peers[sid]?.pc) peers[sid].pc.close();
+function removePeer(sid) {
+  if (peers[sid]?.pc) peers[sid].pc.close();
   delete peers[sid];
   document.getElementById(`tile-${sid}`)?.remove();
   renderParticipants();
@@ -920,18 +865,17 @@ function mkTile(id, name, color, isMe){
 function addMyTile(){
   const tile = mkTile('local', myName, myColor, true);
   document.getElementById('videoGrid').prepend(tile);
-  updateLocalTileVideo();
+  updateLocalVideoTile();
 }
 
-function updateLocalTileVideo(){
+function updateLocalVideoTile(){
   const tile = document.getElementById('tile-local');
   if(!tile) return;
   const vid = tile.querySelector('video');
   if(!vid) return;
-  const src = screenOn && screenVideoTrack ? new MediaStream([screenVideoTrack]) :
-              (camOn && cameraVideoTrack ? new MediaStream([cameraVideoTrack]) : null);
-  if(src){
-    vid.srcObject = src;
+  const track = screenOn ? screenVideoTrack : (camOn ? cameraVideoTrack : null);
+  if(track){
+    vid.srcObject = new MediaStream([track]);
     vid.style.display = 'block';
     tile.querySelector('.vtile-ph').style.display = 'none';
   } else {
@@ -981,7 +925,7 @@ function startSpeakingDetection(){
 }
 
 // ══════════════════════════════════════
-// SOCKET EVENTS (без изменений)
+// SOCKET EVENTS
 // ══════════════════════════════════════
 function setupSocket(){
   socket.on('room:state', ({channels: chans, currentChannel: cur, messages: msgs, users}) => {
@@ -1018,7 +962,7 @@ function setupSocket(){
 
   socket.on('rtc:offer', async ({from, name, color, offer}) => {
     if(peers[from] && peers[from].pc?.signalingState !== 'closed') return;
-    const pc = buildPC(from, name, color);
+    const pc = createPC(from, name, color);
     peers[from] = {pc, name, color: color||'#888', micEnabled:true, videoEnabled:false, stream:null};
     addPeerTile(from, name, color||'#888');
     try {
@@ -1070,6 +1014,7 @@ function setupSocket(){
       pill.dataset.emoji = emoji;
       pill.dataset.count = 1;
       pill.innerHTML = `${emoji} 1`;
+      pill.title = `${from} отреагировал`;
       pill.onclick = () => socket.emit('chat:react', {msgId, emoji});
       reactDiv.appendChild(pill);
     }
@@ -1091,7 +1036,6 @@ function setupSocket(){
   });
 
   socket.on('system:msg', ({text}) => sysMsg(text));
-
   socket.on('disconnect', () => notify('Соединение потеряно', 'red'));
   socket.on('reconnect', () => {
     notify('Переподключено', 'green');
@@ -1100,7 +1044,7 @@ function setupSocket(){
 }
 
 // ══════════════════════════════════════
-// UI RENDER (прежний, без изменений)
+// UI RENDER
 // ══════════════════════════════════════
 function renderChannels(){
   const cont = document.getElementById('channelList');
@@ -1263,7 +1207,6 @@ function sendMsg(){
 // ══════════════════════════════════════
 window.join = async function(mode){
   myName = document.getElementById('lobbyName').value.trim() || 'Аноним';
-  const serverUrl = document.getElementById('serverUrl').value.trim() || 'http://localhost:7432';
 
   if(mode === 'join'){
     const id = document.getElementById('joinId').value.trim();
@@ -1274,22 +1217,22 @@ window.join = async function(mode){
   }
 
   try {
-    socket = io(serverUrl, {transports:['websocket','polling'], timeout:8000, reconnection:true, reconnectionAttempts:5});
-    await new Promise((res,rej) => {
+    socket = io(SERVER_URL, { transports: ['websocket','polling'], timeout: 8000, reconnection: true });
+    await new Promise((res, rej) => {
       socket.once('connect', res);
       socket.once('connect_error', rej);
       setTimeout(rej, 8000);
     });
-  } catch(e){
+  } catch(e) {
     notify('Сервер недоступен. Проверьте адрес.', 'red');
     return;
   }
 
   setupSocket();
 
-  // Захватываем микрофон (по умолчанию включён)
+  // Захват микрофона (включён по умолчанию)
   const audioStream = await getAudioStream();
-  if(audioStream){
+  if(audioStream) {
     audioTrack = audioStream.getAudioTracks()[0];
     audioTrack.enabled = true;
     micOn = true;
@@ -1299,16 +1242,18 @@ window.join = async function(mode){
     notify('Микрофон не доступен', 'amber');
   }
 
-  socket.emit('join', {roomId, name: myName, color: myColor});
+  socket.emit('join', { roomId, name: myName, color: myColor });
 
   $lobby.style.display = 'none';
   $app.style.display = 'flex';
   document.getElementById('topRoom').textContent = roomId;
 
+  // Кнопка микрофона
   const micBtn = document.getElementById('micBtn');
-  micBtn.className = `call-btn ${micOn?'on':'off'}`;
-  micBtn.innerHTML = `${micOn?'🎤':'🔇'} <span class="label">${micOn?'Микрофон':'Откл. мик.'}</span>`;
+  micBtn.className = `call-btn ${micOn ? 'on' : 'off'}`;
+  micBtn.innerHTML = `${micOn ? '🎤' : '🔇'} <span class="label">${micOn ? 'Микрофон' : 'Откл. мик.'}</span>`;
 
+  // Таймер звонка
   callStart = Date.now();
   timerInt = setInterval(() => {
     const elapsed = Date.now() - callStart;
@@ -1326,7 +1271,7 @@ function leaveRoom(){
   if(audioTrack) audioTrack.stop();
   if(cameraVideoTrack) cameraVideoTrack.stop();
   if(screenVideoTrack) screenVideoTrack.stop();
-  Object.values(peers).forEach(p=>p.pc?.close());
+  Object.values(peers).forEach(p => p.pc?.close());
   clearInterval(timerInt);
   if(speakingInt) clearInterval(speakingInt);
   if(audioCtx) audioCtx.close().catch(()=>{});
@@ -1357,12 +1302,12 @@ document.getElementById('msg-input').oninput = function(){
   }
 };
 
-document.getElementById('micBtn').onclick = () => setMicEnabled(!micOn);
-document.getElementById('camBtn').onclick = toggleCamera;
+document.getElementById('micBtn').onclick = toggleMic;
+document.getElementById('camBtn').onclick = toggleCam;
 document.getElementById('shareBtn').onclick = toggleScreen;
 document.getElementById('switchCamBtn').onclick = async () => {
   currentCamera = currentCamera==='user'?'environment':'user';
-  if(camOn){ await toggleCamera(); await toggleCamera(); }
+  if(camOn){ await toggleCam(); await toggleCam(); }
 };
 document.getElementById('leaveBtn').onclick = leaveRoom;
 
@@ -1423,58 +1368,22 @@ document.getElementById('applyCustomBg').onclick = () => { applyVirtualBg(docume
 document.getElementById('settingsBtn').onclick  = () => document.getElementById('settingsModal').classList.add('open');
 document.getElementById('noiseBtn').onclick     = () => document.getElementById('settingsModal').classList.add('open');
 document.getElementById('closeSettingsModal').onclick = () => document.getElementById('settingsModal').classList.remove('open');
-document.getElementById('applyAudioSettings').onclick = async () => {
-  // Применяем настройки к уже существующему треку (если поддерживается)
-  if(audioTrack){
-    try {
-      await audioTrack.applyConstraints({
-        echoCancellation: document.getElementById('toggleEC').checked,
-        noiseSuppression: document.getElementById('toggleNR').checked,
-        autoGainControl: document.getElementById('toggleAGC').checked,
-        channelCount: document.getElementById('toggleStereo').checked ? 2 : 1
-      });
-      notify('Настройки звука обновлены', 'green');
-    } catch(e){
-      // fallback – перезахват
-      await restartAudio();
-    }
-  }
-  document.getElementById('settingsModal').classList.remove('open');
-};
-
-async function restartAudio(){
-  if(audioTrack) audioTrack.stop();
-  const stream = await getAudioStream();
-  if(stream){
-    audioTrack = stream.getAudioTracks()[0];
-    audioTrack.enabled = micOn;
-    // Обновить аудиотрек во всех peer connections
-    for(const sid in peers){
-      const pc = peers[sid].pc;
-      if(pc){
-        const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-        if(sender) sender.replaceTrack(audioTrack);
-        else pc.addTrack(audioTrack, new MediaStream([audioTrack]));
-      }
-    }
-  }
-}
 
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('click', e => { if(e.target === bg) bg.classList.remove('open'); });
 });
 
-// Автозапуск видео после клика
+// Разблокировка автозапуска видео
 document.addEventListener('click', () => {
   document.querySelectorAll('video').forEach(v => v.play().catch(()=>{}));
-}, {once: true});
+}, { once: true });
 
+// Auto-restore session
 window.addEventListener('DOMContentLoaded', () => {
   const saved = loadState();
   if(saved.roomId && saved.myName){
     document.getElementById('lobbyName').value = saved.myName;
     document.getElementById('joinId').value    = saved.roomId;
-    if(saved.serverUrl) document.getElementById('serverUrl').value = saved.serverUrl;
     if(saved.myColor){
       myColor = saved.myColor;
       document.querySelectorAll('.color-swatch').forEach(s => {
